@@ -1,29 +1,40 @@
-import os
-import telebot
 from flask import Flask, request
+import telegram
 
-TOKEN = os.environ.get("BOT_TOKEN")
-bot = telebot.TeleBot(TOKEN)
-server = Flask(__name__)
+# --------------------
+# تنظیمات
+# --------------------
+TOKEN = "8339013760:AAEgr1PBFX59xc4cfTN2fWinWJHJUGWivdo"
+bot = telegram.Bot(token=TOKEN)
 
-# هندلر برای /start
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message, "ربات با موفقیت ران شد ✅")
+app = Flask(__name__)
 
-# وبهوک
-@server.route(f"/{TOKEN}", methods=['POST'])
+# --------------------
+# روت وبهوک
+# --------------------
+@app.route('/webhook', methods=['POST'])
 def webhook():
-    bot.process_new_updates([telebot.types.Update.de_json(request.stream.read().decode("utf-8"))])
-    return "!", 200
+    data = request.get_json(force=True)
+    update = telegram.Update.de_json(data, bot)
 
-# روت اصلی برای چک سلامتی
-@server.route("/", methods=['GET'])
-def index():
+    if update.message:  # اگه پیام متنی بود
+        chat_id = update.message.chat.id
+        text = update.message.text
+
+        # جواب ساده
+        bot.send_message(chat_id=chat_id, text=f"پیام گرفتم: {text}")
+
+    return "ok", 200
+
+# --------------------
+# تست ساده (برای چک سالم بودن)
+# --------------------
+@app.route('/')
+def home():
     return "Bot is running!", 200
 
-if __name__ == "__main__":
-    server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
-
-# برای گونیکورن
-app = server
+# --------------------
+# اجرای اپ (لوکال تست)
+# --------------------
+if __name__ == '__main__':
+    app.run(host="0.0.0.0", port=8000)
