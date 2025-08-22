@@ -1,4 +1,4 @@
 Flask==2.2.5
 pyTelegramBotAPI==4.14.0
 gunicorn
-SQLAlchemy==2.0.23 
+SQLAlchemy==2.0.23
