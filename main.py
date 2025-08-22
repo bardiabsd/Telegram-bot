@@ -1,72 +1,51 @@
-import json
 import os
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
-TOKEN = os.getenv("BOT_TOKEN")  # توکن از Secret کویب خونده میشه
-STORAGE_FILE = "storage.json"
+TOKEN = os.getenv("BOT_TOKEN")  # توکن ربات از محیط Koyeb
 
-# ======== توابع کمکی ======== #
-def load_data():
-    if not os.path.exists(STORAGE_FILE):
-        return {"users": {}, "transactions": []}
-    with open(STORAGE_FILE, "r") as f:
-        return json.load(f)
+# منوی اصلی
+main_menu = ReplyKeyboardMarkup(
+    [
+        ["📋 پنل مدیریت", "👜 کیف پول"],
+        ["➕ ثبت تراکنش", "ℹ️ راهنما"]
+    ],
+    resize_keyboard=True
+)
 
-def save_data(data):
-    with open(STORAGE_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-def get_user(user_id):
-    data = load_data()
-    if str(user_id) not in data["users"]:
-        data["users"][str(user_id)] = {"wallet": 0}
-        save_data(data)
-    return data
-
-# ======== دستورات ======== #
+# استارت -> نمایش دکمه‌ها
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [["💰 کیف پول", "🛒 خرید"], ["📞 پشتیبانی"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text("سلام! به ربات خوش اومدی 🌹", reply_markup=reply_markup)
+    await update.message.reply_text(
+        "سلام 👋 به ربات خوش اومدی.\nاز منوی زیر انتخاب کن:",
+        reply_markup=main_menu
+    )
 
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    data = get_user(user_id)
-
+# هندلر پیام‌ها (دکمه‌ها)
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
-    if text == "💰 کیف پول":
-        wallet = data["users"][str(user_id)]["wallet"]
-        await update.message.reply_text(f"موجودی کیف پول شما: {wallet} تومان")
+    if text == "📋 پنل مدیریت":
+        await update.message.reply_text("🔐 اینجا بخش پنل مدیریت خواهد بود (در حال توسعه...)")
 
-    elif text == "🛒 خرید":
-        await update.message.reply_text("در حال حاضر خرید فعال نیست 🙂")
+    elif text == "👜 کیف پول":
+        await update.message.reply_text("💰 موجودی شما: 0 تومان (فعلاً تستی)")
 
-    elif text == "📞 پشتیبانی":
-        await update.message.reply_text("برای پشتیبانی به @YourSupport پیام دهید.")
+    elif text == "➕ ثبت تراکنش":
+        await update.message.reply_text("✍️ لطفاً مبلغ تراکنش رو بفرست (در حال توسعه...)")
 
-    elif text.startswith("شارژ "):  # مثلا: شارژ 1000
-        try:
-            amount = int(text.split()[1])
-            data["users"][str(user_id)]["wallet"] += amount
-            data["transactions"].append({"user": user_id, "amount": amount, "type": "charge"})
-            save_data(data)
-            await update.message.reply_text(f"✅ کیف پول شما {amount} تومان شارژ شد.")
-        except:
-            await update.message.reply_text("❌ فرمت شارژ درست نیست. مثلا بفرست: شارژ 1000")
+    elif text == "ℹ️ راهنما":
+        await update.message.reply_text("📖 راهنما: با دکمه‌ها می‌تونی از امکانات ربات استفاده کنی.")
 
     else:
-        await update.message.reply_text("دستور نامعتبر ❌")
+        await update.message.reply_text("⚠️ گزینه نامعتبر. لطفاً از منوی پایین انتخاب کن.", reply_markup=main_menu)
 
-# ======== ران ربات ======== #
 def main():
-    application = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.add_handler(CommandHandler("start", start))  # فقط برای بار اول
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    application.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
