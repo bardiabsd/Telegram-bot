@@ -1,44 +1,33 @@
-import logging
-import threading
-from flask import Flask
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
+import os
+from flask import Flask, request
+import telebot
 
-# ----------------- تنظیمات -----------------
-TOKEN = "8339013760:AAEgr1PBFX59xc4cfTN2fWinWJHJUGWivdo"
-PORT = 8000
+# گرفتن توکن از Environment Variables
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("❌ BOT_TOKEN در محیط تعریف نشده!")
 
-# ----------------- وب سرور -----------------
+bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
+# هندلر دکمه استارت
+@bot.message_handler(commands=['start'])
+def start(message):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row("💰 کیف پول", "⚙️ تنظیمات")
+    markup.row("📊 گزارش‌ها", "👤 حساب من")
+    bot.send_message(message.chat.id, "سلام 👋 به ربات خوش اومدی!", reply_markup=markup)
+
+# وبهوک
+@app.route('/' + TOKEN, methods=['POST'])
+def webhook():
+    update = request.stream.read().decode("utf-8")
+    bot.process_new_updates([telebot.types.Update.de_json(update)])
+    return "!", 200
+
 @app.route("/")
-def home():
-    return "Bot is running ✅"
-
-def run_flask():
-    app.run(host="0.0.0.0", port=PORT)
-
-# ----------------- ربات تلگرام -----------------
-logging.basicConfig(level=logging.INFO)
-
-def start(update, context):
-    update.message.reply_text("سلام! ربات روشنه ✅")
-
-def help_cmd(update, context):
-    update.message.reply_text("دستورات: /start - /help")
-
-def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
-
-    # دستورات
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help_cmd))
-
-    # شروع ربات
-    updater.start_polling()
-    updater.idle()
+def index():
+    return "ربات فعاله ✅", 200
 
 if __name__ == "__main__":
-    # اجرای Flask در یک Thread جدا
-    threading.Thread(target=run_flask).start()
-    main()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
