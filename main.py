@@ -1,33 +1,50 @@
 import os
+import logging
 from flask import Flask, request
-import telebot
+from telegram import Bot, Update
+from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
 
-# گرفتن توکن از Environment Variables
-TOKEN = os.getenv("BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("❌ BOT_TOKEN در محیط تعریف نشده!")
+TOKEN = "8339013760:AAEgr1PBFX59xc4cfTN2fWinWJHJUGWivdo"
+URL = "https://live-avivah-bardiabsd-cd8d676a.koyeb.app"   # لینک Koyeb
 
-bot = telebot.TeleBot(TOKEN)
+# لاگ‌ها برای دیباگ
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
 app = Flask(__name__)
+bot = Bot(token=TOKEN)
 
-# هندلر دکمه استارت
-@bot.message_handler(commands=['start'])
-def start(message):
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row("💰 کیف پول", "⚙️ تنظیمات")
-    markup.row("📊 گزارش‌ها", "👤 حساب من")
-    bot.send_message(message.chat.id, "سلام 👋 به ربات خوش اومدی!", reply_markup=markup)
+# دیسپچر برای هندلرها
+dispatcher = Dispatcher(bot, None, workers=0)
 
-# وبهوک
-@app.route('/' + TOKEN, methods=['POST'])
+# دستور /start
+def start(update: Update, context):
+    update.message.reply_text("ربات روی Koyeb ران شد 🚀")
+
+# پیام‌های عادی
+def echo(update: Update, context):
+    update.message.reply_text(update.message.text)
+
+# ثبت هندلرها
+dispatcher.add_handler(CommandHandler("start", start))
+dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, echo))
+
+
+@app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
-    update = request.stream.read().decode("utf-8")
-    bot.process_new_updates([telebot.types.Update.de_json(update)])
-    return "!", 200
+    update = Update.de_json(request.get_json(force=True), bot)
+    dispatcher.process_update(update)
+    return "ok"
 
-@app.route("/")
+
+@app.route('/')
 def index():
-    return "ربات فعاله ✅", 200
+    return "ربات فعاله ✅"
+
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    # ست کردن وبهوک
+    bot.set_webhook(f"{URL}/{TOKEN}")
+    app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 5000)))
