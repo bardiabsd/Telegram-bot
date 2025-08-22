@@ -2,39 +2,26 @@ import os
 import telebot
 from flask import Flask, request
 
-TOKEN = os.getenv("BOT_TOKEN")  # توکن ربات
+TOKEN = os.environ.get("BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN)
+server = Flask(__name__)
 
-app = Flask(__name__)
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(message, "سلام! ربات روی وبهوک ران شده 🚀")
 
-# روت برای تست سلامت
-@app.route("/")
-def index():
-    return "Bot is running on Koyeb 🚀"
+@server.route('/' + TOKEN, methods=['POST'])
+def getMessage():
+    json_str = request.get_data().decode('UTF-8')
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "!", 200
 
-# روت برای ست کردن وبهوک
-@app.route("/setwebhook", methods=["GET"])
-def set_webhook():
-    webhook_url = f"https://{os.getenv('KOYEB_APP_NAME')}.koyeb.app/webhook"
-    success = bot.set_webhook(url=webhook_url)
-    if success:
-        return f"Webhook set to {webhook_url}"
-    else:
-        return "Webhook setting failed!"
-
-# روت وبهوک
-@app.route("/webhook", methods=["POST"])
+@server.route("/")
 def webhook():
-    if request.headers.get("content-type") == "application/json":
-        update = request.get_data().decode("utf-8")
-        bot.process_new_updates([telebot.types.Update.de_json(update)])
-        return "", 200
-    return "Unsupported Media Type", 415
-
-# یک دستور تست
-@bot.message_handler(commands=["start"])
-def send_welcome(message):
-    bot.reply_to(message, "سلام! ربات روی Koyeb بالا اومد 🚀")
+    bot.remove_webhook()
+    bot.set_webhook(url=f"{os.environ.get('APP_URL')}/{TOKEN}")
+    return "Webhook set!", 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000))) 
+    server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000))) 
