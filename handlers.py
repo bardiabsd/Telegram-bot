@@ -1,24 +1,22 @@
 from telebot import types
+import database as db
 
 def main_menu():
-    """ساخت منوی اصلی ربات"""
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn1 = types.KeyboardButton("💰 کیف پول")
-    btn2 = types.KeyboardButton("⚙️ تنظیمات")
-    btn3 = types.KeyboardButton("👤 حساب من")
-    btn4 = types.KeyboardButton("📊 گزارش‌ها")
-    markup.add(btn1, btn2)
-    markup.add(btn3, btn4)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📦 خرید پلن", callback_data="buy_plan"))
+    markup.add(types.InlineKeyboardButton("🪙 کیف پول", callback_data="wallet"))
+    markup.add(types.InlineKeyboardButton("🧾 ارسال رسید", callback_data="receipt"))
+    markup.add(types.InlineKeyboardButton("🎫 پشتیبانی", callback_data="support"))
+    markup.add(types.InlineKeyboardButton("👤 حساب کاربری", callback_data="profile"))
     return markup
 
-def handle_wallet():
-    return "💰 موجودی کیف پول شما: 0 تومان"
-
-def handle_settings():
-    return "⚙️ اینجا تنظیمات شما خواهد بود."
-
-def handle_account():
-    return "👤 اطلاعات حساب شما اینجاست."
-
-def handle_reports():
-    return "📊 در آینده گزارش‌ها اینجا نمایش داده می‌شوند."
+def admin_menu():
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📦 مدیریت پلن‌ها", callback_data="admin_plans"))
+    markup.add(types.InlineKeyboardButton("🪙 مدیریت کیف پول", callback_data="admin_wallet"))
+    markup.add(types.InlineKeyboardButton("🧾 رسیدها و سفارش‌ها", callback_data="admin_receipts"))
+    markup.add(types.InlineKeyboardButton("👥 مدیریت کاربران", callback_data="admin_users"))
+    markup.add(types.InlineKeyboardButton("🏷 کد تخفیف", callback_data="admin_discounts"))
+    markup.add(types.InlineKeyboardButton("📢 اعلان همگانی", callback_data="admin_broadcast"))
+    markup.add(types.InlineKeyboardButton("📊 آمار و گزارش‌ها", callback_data="admin_stats"))
+    return markup
