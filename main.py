@@ -1,51 +1,44 @@
-import os
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+import logging
+import threading
+from flask import Flask
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 
-TOKEN = os.getenv("BOT_TOKEN")  # توکن ربات از محیط Koyeb
+# ----------------- تنظیمات -----------------
+TOKEN = "8339013760:AAEgr1PBFX59xc4cfTN2fWinWJHJUGWivdo"
+PORT = 8000
 
-# منوی اصلی
-main_menu = ReplyKeyboardMarkup(
-    [
-        ["📋 پنل مدیریت", "👜 کیف پول"],
-        ["➕ ثبت تراکنش", "ℹ️ راهنما"]
-    ],
-    resize_keyboard=True
-)
+# ----------------- وب سرور -----------------
+app = Flask(__name__)
 
-# استارت -> نمایش دکمه‌ها
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "سلام 👋 به ربات خوش اومدی.\nاز منوی زیر انتخاب کن:",
-        reply_markup=main_menu
-    )
+@app.route("/")
+def home():
+    return "Bot is running ✅"
 
-# هندلر پیام‌ها (دکمه‌ها)
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+def run_flask():
+    app.run(host="0.0.0.0", port=PORT)
 
-    if text == "📋 پنل مدیریت":
-        await update.message.reply_text("🔐 اینجا بخش پنل مدیریت خواهد بود (در حال توسعه...)")
+# ----------------- ربات تلگرام -----------------
+logging.basicConfig(level=logging.INFO)
 
-    elif text == "👜 کیف پول":
-        await update.message.reply_text("💰 موجودی شما: 0 تومان (فعلاً تستی)")
+def start(update, context):
+    update.message.reply_text("سلام! ربات روشنه ✅")
 
-    elif text == "➕ ثبت تراکنش":
-        await update.message.reply_text("✍️ لطفاً مبلغ تراکنش رو بفرست (در حال توسعه...)")
-
-    elif text == "ℹ️ راهنما":
-        await update.message.reply_text("📖 راهنما: با دکمه‌ها می‌تونی از امکانات ربات استفاده کنی.")
-
-    else:
-        await update.message.reply_text("⚠️ گزینه نامعتبر. لطفاً از منوی پایین انتخاب کن.", reply_markup=main_menu)
+def help_cmd(update, context):
+    update.message.reply_text("دستورات: /start - /help")
 
 def main():
-    app = Application.builder().token(TOKEN).build()
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
 
-    app.add_handler(CommandHandler("start", start))  # فقط برای بار اول
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # دستورات
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("help", help_cmd))
 
-    app.run_polling()
+    # شروع ربات
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
+    # اجرای Flask در یک Thread جدا
+    threading.Thread(target=run_flask).start()
     main()
