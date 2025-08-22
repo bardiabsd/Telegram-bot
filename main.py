@@ -2,18 +2,17 @@ import telebot
 from telebot import types
 import sqlite3
 import os
+from flask import Flask, request
 
-# گرفتن توکن از متغیر محیطی (Koyeb -> Settings -> Environment variables)
 TOKEN = os.getenv("TOKEN")
-
+APP_NAME = os.getenv("APP_NAME")  # مثلا mybotapp
 bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
 
 # ================== دیتابیس ==================
 def init_db():
     conn = sqlite3.connect("bot.db")
     cursor = conn.cursor()
-
-    # جدول کاربران
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,37 +20,6 @@ def init_db():
         wallet REAL DEFAULT 0
     )
     """)
-
-    # جدول سفارش‌ها
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS orders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        service TEXT,
-        status TEXT
-    )
-    """)
-
-    # جدول تیکت‌ها
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS tickets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        message TEXT,
-        status TEXT DEFAULT 'open'
-    )
-    """)
-
-    # جدول کد تخفیف
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS discounts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        code TEXT,
-        percent INTEGER,
-        expire_date TEXT
-    )
-    """)
-
     conn.commit()
     conn.close()
 
@@ -59,8 +27,6 @@ def init_db():
 @bot.message_handler(commands=["start"])
 def start(message):
     user_id = message.from_user.id
-
-    # ثبت کاربر اگه جدید بود
     conn = sqlite3.connect("bot.db")
     cursor = conn.cursor()
     cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
@@ -77,7 +43,32 @@ def start(message):
         reply_markup=markup
     )
 
-# ================== اجرای ربات ==================
+# ====== کیف پول ======
+@bot.message_handler(func=lambda m: m.text == "💳 کیف پول")
+def wallet(message):
+    user_id = message.from_user.id
+    conn = sqlite3.connect("bot.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT wallet FROM users WHERE user_id=?", (user_id,))
+    wallet_balance = cursor.fetchone()[0]
+    conn.close()
+
+    bot.send_message(message.chat.id, f"موجودی کیف پول شما: 💰 {wallet_balance} تومان")
+
+# ================== وبهوک ==================
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("UTF-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "!", 200
+
+@app.route("/")
+def index():
+    return "Bot is running!", 200
+
 if __name__ == "__main__":
     init_db()
-    bot.polling(none_stop=True)
+    bot.remove_webhook()
+    bot.set_webhook(url=f"https://{APP_NAME}.koyeb.app/{TOKEN}")
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000))) 
