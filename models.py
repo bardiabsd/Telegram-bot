@@ -1,6 +1,7 @@
 # models.py
-from sqlalchemy import Column, Integer, String, Float, Boolean
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
+from datetime import datetime
 
 Base = declarative_base()
 
@@ -28,3 +29,5 @@ class Setting(Base):
     id = Column(Integer, primary_key=True, index=True)
     key = Column(String, unique=True)      # مثل: "button_deposit"
     value = Column(Boolean, default=True)  # روشن/خاموش بودن
+
+# جدول لاگ ترا
