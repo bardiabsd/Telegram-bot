@@ -1,50 +1,35 @@
+import telebot
 import os
-import logging
-from flask import Flask, request
-from telegram import Bot, Update
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
+import handlers
 
-TOKEN = "8339013760:AAEgr1PBFX59xc4cfTN2fWinWJHJUGWivdo"
-URL = "https://live-avivah-bardiabsd-cd8d676a.koyeb.app"   # لینک Koyeb
+# دریافت توکن از متغیر محیطی (از Koyeb یا سیستم خودت)
+TOKEN = os.getenv("BOT_TOKEN")
 
-# لاگ‌ها برای دیباگ
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+bot = telebot.TeleBot(TOKEN)
 
-app = Flask(__name__)
-bot = Bot(token=TOKEN)
+# شروع ربات
+@bot.message_handler(commands=['start'])
+def start_message(message):
+    bot.send_message(message.chat.id, "سلام 👋 به ربات خوش اومدی!", reply_markup=handlers.main_menu())
 
-# دیسپچر برای هندلرها
-dispatcher = Dispatcher(bot, None, workers=0)
+# هندل کردن همه پیام‌ها
+@bot.message_handler(func=lambda message: True)
+def message_handler(message):
+    if message.text == "💰 کیف پول":
+        bot.send_message(message.chat.id, handlers.handle_wallet(), reply_markup=handlers.main_menu())
 
-# دستور /start
-def start(update: Update, context):
-    update.message.reply_text("ربات روی Koyeb ران شد 🚀")
+    elif message.text == "⚙️ تنظیمات":
+        bot.send_message(message.chat.id, handlers.handle_settings(), reply_markup=handlers.main_menu())
 
-# پیام‌های عادی
-def echo(update: Update, context):
-    update.message.reply_text(update.message.text)
+    elif message.text == "👤 حساب من":
+        bot.send_message(message.chat.id, handlers.handle_account(), reply_markup=handlers.main_menu())
 
-# ثبت هندلرها
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, echo))
+    elif message.text == "📊 گزارش‌ها":
+        bot.send_message(message.chat.id, handlers.handle_reports(), reply_markup=handlers.main_menu())
 
+    else:
+        bot.send_message(message.chat.id, "سلام 👋 به ربات خوش اومدی!", reply_markup=handlers.main_menu())
 
-@app.route(f'/{TOKEN}', methods=['POST'])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
-    return "ok"
-
-
-@app.route('/')
-def index():
-    return "ربات فعاله ✅"
-
-
+# ران کردن ربات
 if __name__ == "__main__":
-    # ست کردن وبهوک
-    bot.set_webhook(f"{URL}/{TOKEN}")
-    app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 5000)))
+    bot.infinity_polling() 
