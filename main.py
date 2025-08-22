@@ -381,7 +381,7 @@ def cb_pay(c):
             bot.send_message(c.message.chat.id,
                              f"لطفاً رسید پرداخت ({money(final)}) را ارسال کنید. سپس توسط ادمین تأیید می‌شود.",
                              reply_markup=back_btn())
-            st["await_receipt"] = {"kind": "purchase", "plan_id": p.id, "expected": final, "coupon": st.get("coupon")})
+            st["await_receipt"] = {"kind": "purchase", "plan_id": p.id, "expected": final, "coupon": st.get("coupon")}
 
 def send_config(chat_id, item: InventoryItem):
     if item.photo_id:
