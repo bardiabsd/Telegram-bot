@@ -1,16 +1,24 @@
-@bot.message_handler(func=lambda message: True)
-def message_handler(message):
-    if message.text == "💰 کیف پول":
-        bot.send_message(message.chat.id, handlers.handle_wallet(), reply_markup=handlers.main_menu())
+from telebot import types
 
-    elif message.text == "⚙️ تنظیمات":
-        bot.send_message(message.chat.id, handlers.handle_settings(), reply_markup=handlers.main_menu())
+def main_menu():
+    """ساخت منوی اصلی ربات"""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn1 = types.KeyboardButton("💰 کیف پول")
+    btn2 = types.KeyboardButton("⚙️ تنظیمات")
+    btn3 = types.KeyboardButton("👤 حساب من")
+    btn4 = types.KeyboardButton("📊 گزارش‌ها")
+    markup.add(btn1, btn2)
+    markup.add(btn3, btn4)
+    return markup
 
-    elif message.text == "👤 حساب من":
-        bot.send_message(message.chat.id, handlers.handle_account(), reply_markup=handlers.main_menu())
+def handle_wallet():
+    return "💰 موجودی کیف پول شما: 0 تومان"
 
-    elif message.text == "📊 گزارش‌ها":
-        bot.send_message(message.chat.id, handlers.handle_reports(), reply_markup=handlers.main_menu())
+def handle_settings():
+    return "⚙️ اینجا تنظیمات شما خواهد بود."
 
-    else:
-        bot.send_message(message.chat.id, "سلام 👋 به ربات خوش اومدی!", reply_markup=handlers.main_menu())
+def handle_account():
+    return "👤 اطلاعات حساب شما اینجاست."
+
+def handle_reports():
+    return "📊 در آینده گزارش‌ها اینجا نمایش داده می‌شوند."
