@@ -1,54 +1,27 @@
+import os
 import telebot
-from telebot import types
-from flask import Flask
-import threading
 
-# توکن رباتت رو اینجا بذار
-TOKEN = "YOUR_BOT_TOKEN"
+# گرفتن توکن از Environment Variables
+TOKEN = os.getenv("TOKEN")
+if not TOKEN:
+    raise ValueError("❌ Environment variable 'TOKEN' پیدا نشد. لطفاً توی Koyeb ستش کنید.")
+
 bot = telebot.TeleBot(TOKEN)
 
-# ================================
-# دستورات و دکمه‌ها
-# ================================
+# دستور start
 @bot.message_handler(commands=['start'])
-def start(message):
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("پلن 30 روزه", callback_data="plan30"))
-    markup.add(types.InlineKeyboardButton("پلن 60 روزه", callback_data="plan60"))
-    markup.add(types.InlineKeyboardButton("پلن 90 روزه", callback_data="plan90"))
-    bot.send_message(message.chat.id, "سلام! یکی از پلن‌ها رو انتخاب کن:", reply_markup=markup)
+def send_welcome(message):
+    bot.reply_to(message, "سلام 👋 به ربات من خوش اومدی!")
 
-@bot.callback_query_handler(func=lambda call: True)
-def callback_query(call):
-    if call.data == "plan30":
-        bot.answer_callback_query(call.id, "پلن 30 روزه انتخاب شد ✅")
-        bot.send_message(call.message.chat.id, "شما پلن 30 روزه رو انتخاب کردید.")
-    elif call.data == "plan60":
-        bot.answer_callback_query(call.id, "پلن 60 روزه انتخاب شد ✅")
-        bot.send_message(call.message.chat.id, "شما پلن 60 روزه رو انتخاب کردید.")
-    elif call.data == "plan90":
-        bot.answer_callback_query(call.id, "پلن 90 روزه انتخاب شد ✅")
-        bot.send_message(call.message.chat.id, "شما پلن 90 روزه رو انتخاب کردید.")
+# دستور help
+@bot.message_handler(commands=['help'])
+def send_help(message):
+    bot.reply_to(message, "دستورات:\n/start - شروع\n/help - راهنما")
 
-# ================================
-# Flask برای Koyeb
-# ================================
-app = Flask(__name__)
+# اکوی پیام‌ها (هرچی فرستادی همونو برمی‌گردونه)
+@bot.message_handler(func=lambda message: True)
+def echo_all(message):
+    bot.reply_to(message, f"گفتی: {message.text}")
 
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-def run_flask():
-    app.run(host="0.0.0.0", port=8080)
-
-# ================================
-# اجرای همزمان Bot + Flask
-# ================================
-def run_bot():
-    print("🤖 Bot is running...")
-    bot.infinity_polling()
-
-if __name__ == "__main__":
-    threading.Thread(target=run_flask).start()
-    run_bot() 
+print("✅ Bot is running...")
+bot.infinity_polling()
