@@ -1,27 +1,37 @@
-from flask import Flask
 import telebot
+from flask import Flask, request
 import threading
 import os
 
-# گرفتن توکن از Environment Variables
-TOKEN = os.getenv("BOT_TOKEN")
+# --- Bot Token ---
+TOKEN = os.getenv("BOT_TOKEN")  # بهتره از Environment Variable استفاده کنی
 bot = telebot.TeleBot(TOKEN)
 
-# ساخت اپ Flask برای health check
+# --- Flask App ---
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return "✅ Bot is running on Koyeb!"
+# Telegram webhook endpoint
+@app.route("/" + TOKEN, methods=["POST"])
+def getMessage():
+    json_str = request.get_data().decode("UTF-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "!", 200
 
-# هندلر ساده برای تست
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message, "سلام! ربات روشنه 🎉")
+@app.route("/")
+def webhook():
+    bot.remove_webhook()
+    bot.set_webhook(url="https://YOUR-KOYEB-APP-URL/" + TOKEN)  # اینجا آدرس کویب رو بذار
+    return "Webhook set!", 200
 
-# اجرای ربات روی یک thread جدا
+# --- Bot Handlers ---
+@bot.message_handler(commands=["start"])
+def start_message(message):
+    bot.reply_to(message, "سلام 🌹 ربات روشنه و درست کار می‌کنه ✅")
+
+# --- Run Bot in Thread ---
 def run_bot():
-    bot.polling(none_stop=True)
+    bot.infinity_polling()
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot).start()
