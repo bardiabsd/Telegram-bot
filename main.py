@@ -1,39 +1,27 @@
-import os
-import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+import os
 
-# گرفتن توکن و آیدی ادمین از env
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 1743359080))
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1743359080"))
 
-# ساخت اپلیکیشن
 app = FastAPI()
-application = Application.builder().token(BOT_TOKEN).build()
 
+telegram_app = Application.builder().token(TOKEN).build()
 
-# دستور /start
+# مثال: دستور /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await update.message.reply_text(
-        f"سلام {user.first_name} 🌹\n"
-        "به ربات خوش اومدی ✨\n"
-        "از منوی زیر یکی از گزینه‌ها رو انتخاب کن 👇"
-    )
+    await update.message.reply_text("سلام ✌️ ربات با موفقیت ران شد!")
 
+telegram_app.add_handler(CommandHandler("start", start))
 
-application.add_handler(CommandHandler("start", start))
+@app.on_event("startup")
+async def startup_event():
+    await telegram_app.initialize()
+    await telegram_app.start()
+    await telegram_app.updater.start_polling()
 
-
-# هندل کردن وبهوک
-@app.post("/webhook")
-async def webhook(request: Request):
-    data = await request.json()
-    update = Update.de_json(data, application.bot)
-    await application.process_update(update)
-    return {"ok": True}
-
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080))) 
+@app.on_event("shutdown")
+async def shutdown_event():
+    await telegram_app.stop() 
