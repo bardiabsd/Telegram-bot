@@ -25,7 +25,7 @@ ADMIN_IDS_ENV = os.environ.get("ADMIN_IDS")  # مثلا: "111,222"
 if not BOT_TOKEN:
 raise RuntimeError("BOT_TOKEN env is missing and no fallback provided")
 
-ادمین پیش‌فرض (قابل مدیریت داخل ربات)
+#ادمین پیش‌فرض (قابل مدیریت داخل ربات)
 
 DEFAULT_ADMINS = {1743359080}
 if ADMIN_IDS_ENV:
