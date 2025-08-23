@@ -16,7 +16,7 @@ from telebot import types
 
 ========== ENV & BOT ==========
 
-از ENV بخوان؛ اگر نبود از مقادیر پیش‌فرض استفاده کن
+#از ENV بخوان؛ اگر نبود از مقادیر پیش‌فرض استفاده کن
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN") or "8339013760:AAEgr1PBFX59xc4cfTN2fWinWJHJUGWivdo"
 APP_URL   = os.environ.get("APP_URL")   or "https://live-avivah-bardiabsd-cd8d676a.koyeb.app"
