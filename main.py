@@ -453,7 +453,7 @@ def show_main_menu(uid, chat_id=None, text="از منوی زیر انتخاب ک
     kb = main_menu(uid)
     if chat_id is None:
         chat_id = uid
-    bot.send_message(chat_id, text, reply_markup=k b)
+    bot.send_message(chat_id, text, reply_markup=kb)
 
 # ---------- Start & basic ----------
 @app.route("/", methods=["GET"])
