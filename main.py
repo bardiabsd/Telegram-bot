@@ -713,5 +713,5 @@ def ticket_list(uid: int):
 def admin_ticket_notify(uid: int, ticket):
     for a in _db["admins"]:
         try:
-            bot.send_message(a, f"تیکت جدید از {uid
+            bot.send_message(a, f"تیکت جدید از {uid}")
 
