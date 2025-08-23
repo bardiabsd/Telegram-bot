@@ -2,1148 +2,1103 @@
 import os
 import json
 import time
-import re
 from datetime import datetime, timedelta
-
 from flask import Flask, request, abort
 import telebot
-from telebot.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton,
-    InputMediaPhoto
+from telebot import types
+
+# -----------------------------
+# تنظیمات اصلی (Koyeb-friendly)
+# -----------------------------
+
+# اگر متغیر محیطی نبود، از مقادیر کاربر استفاده می‌کنیم
+BOT_TOKEN = os.getenv(
+    "BOT_TOKEN",
+    "8339013760:AAEgr1PBFX59xc4cfTN2fWinWJHJUGWivdo"
+)
+APP_URL = os.getenv(
+    "APP_URL",
+    "https://live-avivah-bardiabsd-cd8d676a.koyeb.app"
 )
 
-# ---------------------------
-# تنظیمات اولیه
-# ---------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8339013760:AAEgr1PBFX59xc4cfTN2fWinWJHJUGWivdo")
-APP_URL   = os.getenv("APP_URL", "https://live-avivah-bardiabsd-cd8d676a.koyeb.app").rstrip("/")
+# ادمین پیش‌فرض (در صورت نبود DB)
+DEFAULT_ADMINS = {1743359080}
 
-# وبهوک: روی همین مسیر ست می‌کنیم (پترن توی Koyeb رو قبلا استفاده کرده بودیم)
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL  = f"{APP_URL}{WEBHOOK_PATH}"
+# کارت مقصد (ادمین در پنل می‌تواند تغییر دهد)
+DEFAULT_CARD = "6037-9972-1234-5678"
 
-# ادمین پیش‌فرض (قابل مدیریت از داخل ربات)
-DEFAULT_ADMIN_ID = 1743359080
+# فایل دیتابیس سبک (JSON)
+DB_PATH = "db.json"
 
-# فایل پایدار‌سازی
-DB_FILE = "db.json"
+# -----------------------------
+# ابزارک‌های دیتابیس ساده
+# -----------------------------
 
-# ---------------------------
-# کمک‌تابع‌های فایل دیتابیس
-# ---------------------------
-def _now_iso():
-    return datetime.utcnow().isoformat()
+def _now_ts():
+    return int(time.time())
 
-def db_load():
-    if not os.path.exists(DB_FILE):
-        # مقداردهی اولیه
-        data = {
-            "admins": [DEFAULT_ADMIN_ID],
-            "users": {},  # user_id -> {"username": "...", "wallet": 0, "stats": {...}}
-            "plans": {},  # plan_id -> {...}
-            "inventory": {},  # plan_id -> [ {text, image_url} , ... ]
-            "coupons": {},  # code -> {percent, plan_id|None, uses, max_uses, expire_at}
-            "receipts": {},  # receipt_id -> {...}
-            "orders": {},    # order_id -> {...} (history)
-            "tickets": {},   # ticket_id -> {...}
-            "texts": {       # متن‌ها/برچسب‌ها (ادمین می‌تواند تغییر دهد)
-                "welcome": (
-                    "سلام! 👋\n"
-                    "خوش اومدی به ربات فروش کانفیگ.\n"
-                    "از منوی زیر یکی از گزینه‌ها رو انتخاب کن."
-                ),
-                "card_number": "6037-7777-7777-7777",  # توسط ادمین قابل ویرایش
-                "cancel": "انصراف",
-                "back": "بازگشت",
+def _load_db():
+    if not os.path.exists(DB_PATH):
+        return {
+            "admins": list(DEFAULT_ADMINS),
+            "card_number": DEFAULT_CARD,
+            "users": {},        # user_id -> profile {username, wallet, buys, tickets, joined}
+            "plans": {},        # plan_id -> {name, days, traffic, price, desc, stock: [items]}
+            "coupons": {},      # code -> {percent, only_plan_id or None, expire_ts or None, max_uses or None, used:0}
+            "receipts": {},     # receipt_id -> {...}
+            "sales": [],        # list of sales records
+            "texts": {          # قابل ویرایش توسط ادمین
+                "welcome": "سلام! خوش اومدی 🌟\nاز منوی زیر انتخاب کن.",
+                "kb_main_title": "منوی اصلی",
+                "btn_buy": "🛒 خرید پلن",
+                "btn_wallet": "🪙 کیف پول",
+                "btn_tickets": "🎫 پشتیبانی",
+                "btn_account": "👤 حساب کاربری",
+                "btn_admin": "🛠 پنل ادمین",
+                "btn_cancel": "❌ انصراف",
             },
-            "toggles": {     # روشن/خاموش دکمه‌ها
+            "toggles": {
                 "buy": True,
                 "wallet": True,
                 "tickets": True,
-                "my_account": True,
-                "admin_panel": True
-            },
-            "states": {},    # user_id -> state dict
-            "counters": {    # برای آیدی‌های خودکار
-                "receipt": 1000,
-                "order": 2000,
-                "ticket": 3000,
-                "plan": 4000
-            },
-            "logs": []
+                "account": True,
+                "admin": True,
+            }
         }
-        db_save(data)
-        return data
-    with open(DB_FILE, "r", encoding="utf-8") as f:
+    with open(DB_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def db_save(data):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def _save_db(db):
+    tmp = DB_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(db, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, DB_PATH)
 
-def log_event(kind, payload):
-    data = db_load()
-    data["logs"].append({"t": _now_iso(), "kind": kind, "data": payload})
-    # برای جلوگیری از بزرگ شدن بی‌نهایت
-    if len(data["logs"]) > 2000:
-        data["logs"] = data["logs"][-1000:]
-    db_save(data)
-
-# ---------------------------
-# مدیریت State (برای ورودی متنی)
-# ---------------------------
-def get_state(uid):
-    data = db_load()
-    return data["states"].get(str(uid), {})
-
-def set_state(uid, **kwargs):
-    data = db_load()
-    st = data["states"].get(str(uid), {})
-    st.update(kwargs)
-    data["states"][str(uid)] = st
-    db_save(data)
-
-def clear_state(uid):
-    data = db_load()
-    if str(uid) in data["states"]:
-        del data["states"][str(uid)]
-        db_save(data)
-
-def expecting(uid):
-    """برمی‌گرداند در چه مرحله‌ای ورودی متنی انتظار داریم. ندارد => None"""
-    st = get_state(uid)
-    return st.get("await")  # کلید را await نمی‌گذاریم که کلمه رزرو نباشد! اما اینجا رشته است OK
-
-# ---------------------------
-# کمک‌تابع‌ها
-# ---------------------------
-def is_admin(user_id):
-    data = db_load()
-    return int(user_id) in data.get("admins", [])
-
-def ensure_user(user):
-    """ثبت اولیه کاربر در DB"""
-    data = db_load()
-    uid = str(user.id)
-    if uid not in data["users"]:
-        data["users"][uid] = {
-            "username": user.username or "",
+def get_user(db, uid, username=None):
+    u = db["users"].get(str(uid))
+    if not u:
+        u = {
+            "id": uid,
+            "username": username or "",
             "wallet": 0,
-            "stats": {"purchases": 0, "spent": 0},
-            "joined_at": _now_iso()
+            "buys": [],
+            "tickets": [],
+            "joined": _now_ts(),
+            "state": {}  # state machine per user
         }
-        db_save(data)
+        db["users"][str(uid)] = u
     else:
-        # آپدیت یوزرنیم اگر عوض شد
-        if (user.username or "") != data["users"][uid].get("username", ""):
-            data["users"][uid]["username"] = user.username or ""
-            db_save(data)
+        if username and u.get("username") != username:
+            u["username"] = username
+    return u
 
-def fmt_money(x):
-    try:
-        n = int(x)
-    except:
-        return str(x)
-    return f"{n:,}".replace(",", "،")
-
-def next_id(counter_key):
-    data = db_load()
-    data["counters"][counter_key] += 1
-    val = data["counters"][counter_key]
-    db_save(data)
-    return val
-
-def plan_btn_title(p):
-    inv_count = len(db_load()["inventory"].get(str(p["id"]), []))
-    return f"{p['name']} | {fmt_money(p['price'])} تومان | موجودی: {inv_count}"
-
-def coupon_valid_for(code, plan_id):
-    data = db_load()
-    c = data["coupons"].get(code)
-    if not c:
-        return False, "کد تخفیف معتبر نیست."
-    # اعتبار زمانی
-    if c.get("expire_at"):
-        try:
-            if datetime.utcnow() > datetime.fromisoformat(c["expire_at"]):
-                return False, "کد منقضی شده است."
-        except:
-            pass
-    # ظرفیت استفاده
-    if c.get("max_uses") is not None and c.get("uses", 0) >= c["max_uses"]:
-        return False, "سقف استفاده این کد تکمیل شده."
-    # محدود به پلن خاص؟
-    pid = c.get("plan_id")
-    if pid and str(pid) != str(plan_id):
-        return False, "این کد برای این پلن معتبر نیست."
-    return True, ""
-
-def apply_coupon_amount(price, code):
-    data = db_load()
-    c = data["coupons"].get(code)
-    if not c:
-        return price, 0
-    percent = max(0, min(100, int(c.get("percent", 0))))
-    discount = (price * percent) // 100
-    return max(0, price - discount), discount
-
-def inc_coupon_use(code):
-    data = db_load()
-    if code in data["coupons"]:
-        data["coupons"][code]["uses"] = data["coupons"][code].get("uses", 0) + 1
-        db_save(data)
-
-# ---------------------------
-# ساخت منوهای کاربر و ادمین
-# ---------------------------
-def main_menu(uid):
-    data = db_load()
-    tgl = data["toggles"]
-    kb = InlineKeyboardMarkup(row_width=2)
-    rows = []
-    if tgl.get("buy", True):
-        rows.append(InlineKeyboardButton("📦 خرید پلن", callback_data="buy"))
-    if tgl.get("wallet", True):
-        rows.append(InlineKeyboardButton("🪙 کیف پول", callback_data="wallet"))
-    if tgl.get("tickets", True):
-        rows.append(InlineKeyboardButton("🎫 تیکت پشتیبانی", callback_data="tickets"))
-    if tgl.get("my_account", True):
-        rows.append(InlineKeyboardButton("👤 حساب کاربری", callback_data="myacc"))
-    if is_admin(uid) and tgl.get("admin_panel", True):
-        rows.append(InlineKeyboardButton("🛠 پنل ادمین", callback_data="admin"))
-    # چینش 2تایی
-    kb.add(*rows)
-    return kb
-
-def back_cancel_kb():
-    data = db_load()
-    return InlineKeyboardMarkup().row(
-        InlineKeyboardButton(f"⬅️ {data['texts']['back']}", callback_data="back"),
-        InlineKeyboardButton(f"✖️ {data['texts']['cancel']}", callback_data="cancel")
-    )
-
-def wallet_menu():
-    data = db_load()
-    kb = InlineKeyboardMarkup()
-    kb.row(InlineKeyboardButton("➕ شارژ کیف پول", callback_data="wallet_charge"))
-    kb.row(InlineKeyboardButton("📜 تاریخچه تراکنش‌ها", callback_data="wallet_tx"))
-    kb.row(
-        InlineKeyboardButton(f"✖️ {data['texts']['cancel']}", callback_data="cancel")
-    )
-    return kb
-
-def buy_menu():
-    data = db_load()
-    kb = InlineKeyboardMarkup()
-    # لیست پلن‌ها
-    plans = list(data["plans"].values())
-    plans.sort(key=lambda x: x["id"])
-    for p in plans:
-        inv = data["inventory"].get(str(p["id"]), [])
-        if len(inv) == 0:
-            # پلن بدون موجودی: غیرفعال
-            title = plan_btn_title(p) + " (ناموجود)"
-            kb.row(InlineKeyboardButton(title, callback_data="noop"))
+def set_state(uobj, **kw):
+    st = uobj.get("state") or {}
+    for k, v in kw.items():
+        if v is None:
+            st.pop(k, None)
         else:
-            kb.row(InlineKeyboardButton(plan_btn_title(p), callback_data=f"buy_plan:{p['id']}"))
-    kb.row(InlineKeyboardButton("🏷 اعمال کد تخفیف", callback_data="coupon_apply"))
-    kb.row(InlineKeyboardButton("✖️ انصراف", callback_data="cancel"))
-    return kb
+            st[k] = v
+    uobj["state"] = st
 
-def payment_menu(final_amount):
-    data = db_load()
-    kb = InlineKeyboardMarkup()
-    kb.row(InlineKeyboardButton(f"🪙 پرداخت از کیف پول ({fmt_money(final_amount)} تومان)", callback_data="pay_wallet"))
-    kb.row(InlineKeyboardButton("💳 کارت‌به‌کارت", callback_data="pay_card"))
-    kb.row(InlineKeyboardButton(f"✖️ {data['texts']['cancel']}", callback_data="cancel"))
-    return kb
+def clear_state(uobj):
+    uobj["state"] = {}
 
-def tickets_menu():
-    kb = InlineKeyboardMarkup()
-    kb.row(InlineKeyboardButton("📝 ایجاد تیکت جدید", callback_data="tkt_new"))
-    kb.row(InlineKeyboardButton("📂 تیکت‌های من", callback_data="tkt_my"))
-    kb.row(InlineKeyboardButton("✖️ انصراف", callback_data="cancel"))
-    return kb
+def is_admin(db, uid):
+    return uid in set(db.get("admins", []))
 
-def admin_menu():
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("👑 مدیریت ادمین‌ها", callback_data="adm_admins"),
-        InlineKeyboardButton("📦 مدیریت پلن‌ها/مخزن", callback_data="adm_plans"),
-        InlineKeyboardButton("🏷 کدهای تخفیف", callback_data="adm_coupons"),
-        InlineKeyboardButton("🪙 کیف پول (ادمین)", callback_data="adm_wallet"),
-        InlineKeyboardButton("👥 کاربران", callback_data="adm_users"),
-        InlineKeyboardButton("🧩 دکمه‌ها و متون", callback_data="adm_texts"),
-        InlineKeyboardButton("📢 اعلان همگانی", callback_data="adm_broadcast"),
-        InlineKeyboardButton("📊 آمار فروش", callback_data="adm_stats"),
-        InlineKeyboardButton("🧾 رسیدها/سفارش‌ها", callback_data="adm_receipts")
-    )
-    kb.row(InlineKeyboardButton("بازگشت به منوی اصلی", callback_data="back"))
-    return kb
+def next_id(prefix):
+    return f"{prefix}_{int(time.time()*1000)}"
 
-def admins_menu():
-    kb = InlineKeyboardMarkup()
-    kb.row(InlineKeyboardButton("➕ افزودن ادمین", callback_data="adm_admin_add"))
-    kb.row(InlineKeyboardButton("➖ حذف ادمین", callback_data="adm_admin_del"))
-    kb.row(InlineKeyboardButton("📋 فهرست ادمین‌ها", callback_data="adm_admin_list"))
-    kb.row(InlineKeyboardButton("↩️ بازگشت", callback_data="admin"))
-    return kb
-
-def plans_menu():
-    kb = InlineKeyboardMarkup()
-    kb.row(InlineKeyboardButton("➕ افزودن پلن", callback_data="plan_add"))
-    kb.row(InlineKeyboardButton("✏️ ویرایش پلن", callback_data="plan_edit"))
-    kb.row(InlineKeyboardButton("🗑 حذف پلن", callback_data="plan_del"))
-    kb.row(InlineKeyboardButton("📥 مدیریت مخزن پلن", callback_data="inv_manage"))
-    kb.row(InlineKeyboardButton("↩️ بازگشت", callback_data="admin"))
-    return kb
-
-def coupons_menu():
-    kb = InlineKeyboardMarkup()
-    kb.row(InlineKeyboardButton("➕ ساخت کد تخفیف", callback_data="coupon_new"))
-    kb.row(InlineKeyboardButton("✏️ ویرایش کد", callback_data="coupon_edit"))
-    kb.row(InlineKeyboardButton("🗑 حذف کد", callback_data="coupon_del"))
-    kb.row(InlineKeyboardButton("📋 لیست کدها", callback_data="coupon_list"))
-    kb.row(InlineKeyboardButton("↩️ بازگشت", callback_data="admin"))
-    return kb
-
-def wallet_admin_menu():
-    kb = InlineKeyboardMarkup()
-    kb.row(InlineKeyboardButton("📥 رسیدهای شارژ در انتظار", callback_data="adm_wallet_inbox"))
-    kb.row(InlineKeyboardButton("➕ شارژ دستی کاربر", callback_data="adm_wallet_add"))
-    kb.row(InlineKeyboardButton("➖ کسر دستی کاربر", callback_data="adm_wallet_sub"))
-    kb.row(InlineKeyboardButton("↩️ بازگشت", callback_data="admin"))
-    return kb
-
-def users_menu():
-    kb = InlineKeyboardMarkup()
-    kb.row(InlineKeyboardButton("🔎 جستجوی کاربر", callback_data="users_search"))
-    kb.row(InlineKeyboardButton("📋 لیست کاربران", callback_data="users_list"))
-    kb.row(InlineKeyboardButton("🚫 بن/آنبن کاربر", callback_data="users_ban"))
-    kb.row(InlineKeyboardButton("↩️ بازگشت", callback_data="admin"))
-    return kb
-
-def texts_menu():
-    kb = InlineKeyboardMarkup()
-    kb.row(InlineKeyboardButton("✏️ ویرایش متن خوش‌آمدگویی", callback_data="txt_welcome"))
-    kb.row(InlineKeyboardButton("✏️ ویرایش شماره کارت", callback_data="txt_card"))
-    kb.row(InlineKeyboardButton("🟢/🔴 روشن/خاموش دکمه‌ها", callback_data="txt_toggles"))
-    kb.row(InlineKeyboardButton("↩️ بازگشت", callback_data="admin"))
-    return kb
-
-def toggles_menu():
-    data = db_load()
-    t = data["toggles"]
-    kb = InlineKeyboardMarkup(row_width=2)
-    def badge(x): return "🟢" if t.get(x, True) else "🔴"
-    kb.add(
-        InlineKeyboardButton(f"{badge('buy')} خرید پلن", callback_data="tgl:buy"),
-        InlineKeyboardButton(f"{badge('wallet')} کیف پول", callback_data="tgl:wallet"),
-        InlineKeyboardButton(f"{badge('tickets')} تیکت‌ها", callback_data="tgl:tickets"),
-        InlineKeyboardButton(f"{badge('my_account')} حساب کاربری", callback_data="tgl:my_account"),
-        InlineKeyboardButton(f"{badge('admin_panel')} پنل ادمین", callback_data="tgl:admin_panel"),
-    )
-    kb.row(InlineKeyboardButton("↩️ بازگشت", callback_data="adm_texts"))
-    return kb
-
-# ---------------------------
-# Bot و Flask
-# ---------------------------
-bot = telebot.TeleBot(BOT_TOKEN, threaded=False, num_threads=1)
+# -----------------------------
+# تلگرام و وبهوک
+# -----------------------------
+bot = telebot.TeleBot(BOT_TOKEN, threaded=False, parse_mode="HTML")
 app = Flask(__name__)
 
-def set_webhook_once():
-    """ست کردن وبهوک با هندل ارور 429 (Too Many Requests)"""
-    try:
-        bot.remove_webhook()
-    except Exception as e:
-        pass
-    time.sleep(0.3)
-    for _ in range(3):
-        try:
-            bot.set_webhook(url=WEBHOOK_URL)
-            print(f"{_now_iso()} | INFO | Webhook set to: {WEBHOOK_URL}")
-            return
-        except telebot.apihelper.ApiTelegramException as e:
-            if "Too Many Requests" in str(e):
-                time.sleep(1.2)
-                continue
-            else:
-                print(f"{_now_iso()} | ERROR | Failed to set webhook: {e}")
-                break
-        except Exception as e:
-            print(f"{_now_iso()} | ERROR | Failed to set webhook: {e}")
-            break
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"{APP_URL}{WEBHOOK_PATH}"
 
-set_webhook_once()
-
-@app.route("/")
-def index():
+@app.route("/", methods=["GET"])
+def root():
     return "OK", 200
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
-def webhook():
+def telegram_webhook():
     if request.headers.get("content-type") == "application/json":
-        json_str = request.get_data().decode("utf-8")
-        update = telebot.types.Update.de_json(json_str)
-        bot.process_new_updates([update])
+        update = request.get_json()
+        bot.process_new_updates([telebot.types.Update.de_json(update)])
         return "OK", 200
     else:
         abort(403)
 
-# ---------------------------
-# استارت و منوی اصلی
-# ---------------------------
+# set webhook (تلاش اولیه + خطای 429 لاگ می‌شود)
+def set_webhook_once():
+    try:
+        info = bot.get_webhook_info()
+        if info and info.url == WEBHOOK_URL:
+            print(f"{datetime.utcnow()} | INFO | Webhook already set: {WEBHOOK_URL}")
+            return
+    except Exception as e:
+        print(f"{datetime.utcnow()} | WARN | get_webhook_info failed: {e}")
+    try:
+        bot.set_webhook(url=WEBHOOK_URL)
+        print(f"{datetime.utcnow()} | INFO | Webhook set to: {WEBHOOK_URL}")
+    except Exception as e:
+        print(f"{datetime.utcnow()} | ERROR | set_webhook failed: {e}")
+
+# -----------------------------
+# کیبوردها
+# -----------------------------
+def kb_main(db):
+    t = db["texts"]
+    tg = db["toggles"]
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    rows = []
+    if tg.get("buy"): rows.append(types.KeyboardButton(t["btn_buy"]))
+    if tg.get("wallet"): rows.append(types.KeyboardButton(t["btn_wallet"]))
+    if tg.get("tickets"): rows.append(types.KeyboardButton(t["btn_tickets"]))
+    if tg.get("account"): rows.append(types.KeyboardButton(t["btn_account"]))
+    if tg.get("admin"): rows.append(types.KeyboardButton(t["btn_admin"]))
+    kb.add(*rows)
+    return kb
+
+def kb_cancel(db):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(types.KeyboardButton(db["texts"]["btn_cancel"]))
+    return kb
+
+def ik_cancel(db):
+    ik = types.InlineKeyboardMarkup()
+    ik.add(types.InlineKeyboardButton(db["texts"]["btn_cancel"], callback_data="cancel"))
+    return ik
+
+# -----------------------------
+# منوی اصلی و استارت
+# -----------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(m):
-    ensure_user(m.from_user)
-    clear_state(m.from_user.id)
-    # پیام خوش‌آمد + منوی اصلی
-    data = db_load()
+    db = _load_db()
+    u = get_user(db, m.from_user.id, m.from_user.username)
+    _save_db(db)
     bot.send_message(
         m.chat.id,
-        data["texts"]["welcome"],
-        reply_markup=main_menu(m.from_user.id)
+        db["texts"]["welcome"],
+        reply_markup=kb_main(db)
     )
 
-# ---------------------------
-# هندل کلیک‌های دکمه‌ای
-# ---------------------------
-@bot.callback_query_handler(func=lambda c: True)
-def on_cb(c):
+# -----------------------------
+# خرید پلن (نمای پایه)
+# -----------------------------
+def human_price(p):
+    return f"{p:,} تومان"
+
+def plans_inline(db):
+    ik = types.InlineKeyboardMarkup()
+    for pid, p in db["plans"].items():
+        stock = len(p.get("stock", []))
+        title = f"{p['name']} • {human_price(p['price'])} • موجودی {stock}"
+        ik.add(types.InlineKeyboardButton(title, callback_data=f"plan:{pid}"))
+    if not db["plans"]:
+        ik.add(types.InlineKeyboardButton("فعلاً پلنی موجود نیست", callback_data="noop"))
+    ik.add(types.InlineKeyboardButton("انصراف", callback_data="cancel"))
+    return ik
+
+def show_plan_detail(db, chat_id, pid, uid):
+    p = db["plans"].get(pid)
+    if not p:
+        bot.send_message(chat_id, "پلن نامعتبر است.", reply_markup=kb_main(db))
+        return
+    stock = len(p.get("stock", []))
+    txt = (
+        f"<b>{p['name']}</b>\n"
+        f"مدت: {p['days']} روز\n"
+        f"حجم: {p['traffic']}\n"
+        f"قیمت: {human_price(p['price'])}\n"
+        f"موجودی مخزن: {stock}\n\n"
+        f"توضیحات: {p.get('desc','-')}"
+    )
+    ik = types.InlineKeyboardMarkup()
+    ik.add(
+        types.InlineKeyboardButton("اعمال کد تخفیف", callback_data=f"buy:coupon:{pid}"),
+        types.InlineKeyboardButton("کارت‌به‌کارت", callback_data=f"buy:bank:{pid}")
+    )
+    ik.add(types.InlineKeyboardButton("پرداخت با کیف پول", callback_data=f"buy:wallet:{pid}"))
+    ik.add(types.InlineKeyboardButton("انصراف", callback_data="cancel"))
+    bot.send_message(chat_id, txt, reply_markup=ik)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("plan:"))
+def cb_plan(c):
+    db = _load_db()
     uid = c.from_user.id
-    ensure_user(c.from_user)
-    data = db_load()
-    cd = c.data or ""
+    show_plan_detail(db, c.message.chat.id, c.data.split(":",1)[1], uid)
 
-    # ناوبری عمومی
-    if cd == "back":
-        clear_state(uid)
-        bot.edit_message_text(
-            data["texts"]["welcome"],
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=main_menu(uid)
-        )
-        return
-    if cd == "cancel":
-        clear_state(uid)
-        bot.answer_callback_query(c.id, "لغو شد.")
-        bot.edit_message_text(
-            "لغو شد ✅",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=main_menu(uid)
-        )
-        return
+@bot.callback_query_handler(func=lambda c: c.data == "noop")
+def cb_noop(c):
+    bot.answer_callback_query(c.id, "—")
 
-    # منوهای کاربر
-    if cd == "buy":
-        clear_state(uid)
-        bot.edit_message_text(
-            "یکی از پلن‌ها را انتخاب کنید:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=buy_menu()
-        )
-        return
+@bot.callback_query_handler(func=lambda c: c.data == "cancel")
+def cb_cancel(c):
+    db = _load_db()
+    u = get_user(db, c.from_user.id, c.from_user.username)
+    clear_state(u)
+    _save_db(db)
+    bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
+    bot.send_message(c.message.chat.id, "لغو شد ✅", reply_markup=kb_main(db))
 
-    if cd.startswith("buy_plan:"):
-        # انتخاب پلن
-        pid = cd.split(":",1)[1]
-        p = data["plans"].get(str(pid))
-        if not p:
-            bot.answer_callback_query(c.id, "پلن پیدا نشد.")
-            return
-        # اعمال کد تخفیف (اگر در state باشد)
-        st = get_state(uid)
-        code = st.get("coupon_code")
-        price = int(p["price"])
-        final_price = price
-        discount = 0
-        if code:
-            ok, msg = coupon_valid_for(code, pid)
-            if ok:
-                final_price, discount = apply_coupon_amount(price, code)
-            else:
-                # کد نامعتبر؛ پاک می‌کنیم
-                st.pop("coupon_code", None)
-                set_state(uid, **st)
-        # ذخیره سفارش در state تا پرداخت
-        set_state(uid, flow="buy", plan_id=pid, final_amount=final_price)
-        msg = f"پلن انتخابی: {p['name']}\n" \
-              f"قیمت: {fmt_money(price)} تومان\n"
-        if discount:
-            msg += f"تخفیف: {fmt_money(discount)} تومان\n"
-        msg += f"مبلغ نهایی: {fmt_money(final_price)} تومان\n\n" \
-               "روش پرداخت را انتخاب کنید:"
-        bot.edit_message_text(
-            msg,
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=payment_menu(final_price)
-        )
-        return
+# اعمال کد تخفیف
+@bot.callback_query_handler(func=lambda c: c.data.startswith("buy:coupon:"))
+def cb_buy_coupon(c):
+    db = _load_db()
+    uid = c.from_user.id
+    pid = c.data.split(":")[-1]
+    u = get_user(db, uid, c.from_user.username)
+    set_state(u, flow="buy", step="coupon_code", plan_id=pid)
+    _save_db(db)
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, "کد تخفیف را وارد کنید (یا «انصراف»):", reply_markup=kb_cancel(db))
 
-    if cd == "coupon_apply":
-        # درخواست کد تخفیف
-        set_state(uid, flow="buy", await="coupon_code")
-        bot.edit_message_text(
-            "کد تخفیف را بفرستید (یا «انصراف»):",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=back_cancel_kb()
-        )
+# پرداخت کیف پول
+@bot.callback_query_handler(func=lambda c: c.data.startswith("buy:wallet:"))
+def cb_buy_wallet(c):
+    db = _load_db()
+    uid = c.from_user.id
+    pid = c.data.split(":")[-1]
+    u = get_user(db, uid, c.from_user.username)
+    p = db["plans"].get(pid)
+    if not p:
+        bot.answer_callback_query(c.id, "پلن نامعتبر.")
         return
-
-    if cd == "pay_wallet":
-        st = get_state(uid)
-        pid = st.get("plan_id")
-        final_amount = int(st.get("final_amount", 0))
-        inv = data["inventory"].get(str(pid), [])
-        if not inv:
-            bot.answer_callback_query(c.id, "موجودی این پلن خالی است.")
-            return
-        # چک موجودی کیف پول
-        user = data["users"][str(uid)]
-        if user["wallet"] >= final_amount:
-            # پرداخت از کیف پول
-            user["wallet"] -= final_amount
-            data["users"][str(uid)] = user
-            # ارسال کانفیگ
-            cfg = inv.pop(0)
-            data["inventory"][str(pid)] = inv
-            # ثبت سفارش
-            oid = next_id("order")
-            data["orders"][str(oid)] = {
-                "id": oid,
-                "user_id": uid,
-                "plan_id": int(pid),
-                "amount": final_amount,
-                "paid_via": "wallet",
-                "at": _now_iso()
-            }
-            # آپدیت آمار
-            data["users"][str(uid)]["stats"]["purchases"] += 1
-            data["users"][str(uid)]["stats"]["spent"] += final_amount
-            db_save(data)
-            clear_state(uid)
-            # ارسال کانفیگ (متن + تصویر در صورت وجود)
-            txt = cfg.get("text", "—")
-            img = cfg.get("image_url")
-            if img:
-                bot.send_photo(c.message.chat.id, img, caption=f"کانفیگ شما:\n{txt}")
-            else:
-                bot.send_message(c.message.chat.id, f"کانفیگ شما:\n{txt}")
-            bot.edit_message_text(
-                "پرداخت با موفقیت انجام شد ✅",
-                chat_id=c.message.chat.id,
-                message_id=c.message.message_id,
-                reply_markup=main_menu(uid)
-            )
+    # بررسی موجودی مخزن
+    if not p.get("stock"):
+        bot.answer_callback_query(c.id, "موجودی این پلن تمام است.")
+        return
+    price = p["price"]
+    # اگر قبلاً کوپن روی state بوده، اعمال می‌کنیم
+    coupon_code = u["state"].get("coupon_code")
+    final = price
+    if coupon_code and coupon_code in db["coupons"]:
+        cp = db["coupons"][coupon_code]
+        # بررسی محدودیت‌ها
+        ok = True
+        if cp.get("only_plan_id") and cp["only_plan_id"] != pid:
+            ok = False
+        if cp.get("expire_ts") and _now_ts() > cp["expire_ts"]:
+            ok = False
+        if cp.get("max_uses") and cp.get("used", 0) >= cp["max_uses"]:
+            ok = False
+        if ok:
+            final = max(0, price - (price * int(cp["percent"]) // 100))
         else:
-            # موجودی ناکافی => نمایش مابه‌التفاوت + دکمه‌ی شارژ همین مقدار
-            need = final_amount - user["wallet"]
-            set_state(uid, flow="buy", await=None, need_topup=need)
-            kb = InlineKeyboardMarkup()
-            kb.row(InlineKeyboardButton(f"➕ شارژ {fmt_money(need)} تومان", callback_data="wallet_charge_need"))
-            kb.row(InlineKeyboardButton("✖️ انصراف", callback_data="cancel"))
-            bot.edit_message_text(
-                f"موجودی کیف پول کافی نیست.\n"
-                f"مبلغ موردنیاز: {fmt_money(need)} تومان",
-                chat_id=c.message.chat.id,
-                message_id=c.message.message_id,
-                reply_markup=kb
-            )
+            coupon_code = None
+    # پرداخت از کیف پول
+    if u["wallet"] < final:
+        diff = final - u["wallet"]
+        msg = (
+            f"موجودی کیف پول شما کافی نیست.\n"
+            f"مبلغ نهایی: {human_price(final)}\n"
+            f"موجودی فعلی: {human_price(u['wallet'])}\n"
+            f"مابه‌التفاوت: {human_price(diff)}\n"
+            "می‌خواهید همین مقدار را شارژ کنید؟"
+        )
+        ik = types.InlineKeyboardMarkup()
+        ik.add(
+            types.InlineKeyboardButton("شارژ همین مقدار", callback_data=f"wallet:charge_diff:{diff}:{pid}"),
+            types.InlineKeyboardButton("انصراف", callback_data="cancel"),
+        )
+        bot.answer_callback_query(c.id)
+        bot.send_message(c.message.chat.id, msg, reply_markup=ik)
         return
 
-    if cd == "wallet_charge_need":
-        st = get_state(uid)
-        need = int(st.get("need_topup", 0))
-        data = db_load()
-        card = data["texts"]["card_number"]
-        # ثبت درخواست رسید
-        rid = next_id("receipt")
-        data = db_load()  # ری لود برای کانتر
-        data["receipts"][str(rid)] = {
+    # انجام خرید
+    u["wallet"] -= final
+    conf = p["stock"].pop(0)  # برداشتن یک کانفیگ
+    sale = {
+        "id": next_id("sale"),
+        "uid": uid,
+        "pid": pid,
+        "price": price,
+        "final": final,
+        "coupon": coupon_code or "",
+        "ts": _now_ts()
+    }
+    db["sales"].append(sale)
+    u["buys"].append(sale["id"])
+    # اعمال شمارنده‌ی کوپن
+    if coupon_code and coupon_code in db["coupons"]:
+        db["coupons"][coupon_code]["used"] = db["coupons"][coupon_code].get("used", 0) + 1
+    _save_db(db)
+
+    # ارسال کانفیگ (متن/عکس قابل پشتیبانی در نسخه‌های بعد)
+    txt = f"خرید شما با موفقیت انجام شد ✅\n\n{conf}"
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, txt, reply_markup=kb_main(db))
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("wallet:charge_diff:"))
+def cb_wallet_charge_diff(c):
+    db = _load_db()
+    uid = c.from_user.id
+    parts = c.data.split(":")
+    # wallet:charge_diff:<amount>:<pid>
+    amount = int(parts[2])
+    pid = parts[3]
+    card = db.get("card_number", DEFAULT_CARD)
+    u = get_user(db, uid, c.from_user.username)
+    # قرار دادن state برای بارگذاری رسید
+    set_state(u, flow="wallet", step="upload_receipt_diff", amount=amount, buy_after=pid)
+    _save_db(db)
+
+    msg = (
+        "برای تکمیل خرید، لطفاً مابه‌التفاوت را کارت‌به‌کارت کنید:\n\n"
+        f"💳 شماره کارت: <code>{card}</code>\n"
+        "📝 سپس «رسید» را همین‌جا ارسال کنید.\n\n"
+        "یا «انصراف» را بزنید."
+    )
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, msg, reply_markup=kb_cancel(db))
+
+# بانک (کارت به کارت مستقیم بدون کیف پول)
+@bot.callback_query_handler(func=lambda c: c.data.startswith("buy:bank:"))
+def cb_buy_bank(c):
+    db = _load_db()
+    uid = c.from_user.id
+    pid = c.data.split(":")[-1]
+    u = get_user(db, uid, c.from_user.username)
+    card = db.get("card_number", DEFAULT_CARD)
+
+    # اگر کوپن در state ثبت شده، بعد از رسید تایید اعمال می‌شود
+    set_state(u, flow="bank", step="upload_receipt", plan_id=pid)
+    _save_db(db)
+
+    msg = (
+        "برای خرید این پلن، مبلغ آن را کارت‌به‌کارت کنید:\n\n"
+        f"💳 شماره کارت: <code>{card}</code>\n"
+        "📝 سپس «رسید» را همین‌جا ارسال کنید.\n\n"
+        "یا «انصراف» را بزنید."
+    )
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, msg, reply_markup=kb_cancel(db))
+
+# -----------------------------
+# کیف پول (نمای پایه)
+# -----------------------------
+@bot.message_handler(func=lambda m: True)
+def on_message(m):
+    text = (m.text or "").strip()
+    db = _load_db()
+    u = get_user(db, m.from_user.id, m.from_user.username)
+    st = u.get("state", {})
+    isadm = is_admin(db, u["id"])
+
+    # هندل مراحل ورودی آزاد (state-based)
+    if text == db["texts"]["btn_cancel"] or text == "/cancel":
+        clear_state(u)
+        _save_db(db)
+        bot.send_message(m.chat.id, "لغو شد ✅", reply_markup=kb_main(db))
+        return
+
+    # --- مراحل آزاد: ورود کد تخفیف
+    if st.get("flow") == "buy" and st.get("step") == "coupon_code":
+        code = text.replace(" ", "")
+        pid = st.get("plan_id")
+        u["state"]["coupon_code"] = code
+        # بعد از ثبت کد، جزئیات پلن را دوباره نشان بده
+        clear_state(u)
+        _save_db(db)
+        bot.send_message(m.chat.id, "کد تخفیف ثبت شد ✅")
+        show_plan_detail(db, m.chat.id, pid, u["id"])
+        return
+
+    # --- مراحل آزاد: آپلود رسید (مابه‌التفاوت)
+    if st.get("flow") == "wallet" and st.get("step") == "upload_receipt_diff":
+        # کاربر باید عکس یا پیام رسید بده—ما هر نوع محتوا را می‌پذیریم و برای ادمین ثبت می‌کنیم
+        rid = next_id("rcp")
+        db["receipts"][rid] = {
             "id": rid,
-            "user_id": uid,
-            "username": db_load()["users"][str(uid)]["username"],
-            "kind": "wallet_topup",
-            "target": "buy_continue",
-            "amount_expected": need,
+            "uid": u["id"],
+            "username": u.get("username", ""),
+            "type": "charge_diff",
+            "amount": st.get("amount", 0),
+            "plan_id": st.get("buy_after"),
             "status": "pending",
-            "created_at": _now_iso()
+            "note": "wallet_diff",
+            "ts": _now_ts(),
+            "message_id": m.message_id
         }
-        db_save(data)
-        clear_state(uid)
-        bot.edit_message_text(
-            f"لطفاً مبلغ {fmt_money(need)} تومان را به کارت زیر واریز کنید و رسید را ارسال کنید:\n\n"
-            f"💳 {card}\n\n"
-            "پس از ارسال رسید، منتظر تأیید ادمین بمانید.",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=back_cancel_kb()
-        )
+        clear_state(u)
+        _save_db(db)
+        bot.send_message(m.chat.id, "رسید شما ثبت شد؛ منتظر تأیید ادمین… ✅", reply_markup=kb_main(db))
+        notify_admins_new_receipt(db, rid)
         return
 
-    if cd == "pay_card":
-        # نمایش شماره کارت و درخواست رسید
-        card = data["texts"]["card_number"]
-        st = get_state(uid)
+    # --- مراحل آزاد: آپلود رسید خرید بانکی
+    if st.get("flow") == "bank" and st.get("step") == "upload_receipt":
+        rid = next_id("rcp")
         pid = st.get("plan_id")
-        final_amount = int(st.get("final_amount", 0))
-        rid = next_id("receipt")
-        data = db_load()
-        data["receipts"][str(rid)] = {
+        db["receipts"][rid] = {
             "id": rid,
-            "user_id": uid,
-            "username": data["users"][str(uid)]["username"],
-            "kind": "plan_purchase",
-            "plan_id": int(pid),
-            "amount_expected": final_amount,
+            "uid": u["id"],
+            "username": u.get("username", ""),
+            "type": "buy_bank",
+            "amount": None,  # ادمین وارد می‌کند
+            "plan_id": pid,
             "status": "pending",
-            "created_at": _now_iso()
+            "note": "buy_bank",
+            "ts": _now_ts(),
+            "message_id": m.message_id
         }
-        db_save(data)
-        clear_state(uid)
-        bot.edit_message_text(
-            f"لطفاً مبلغ {fmt_money(final_amount)} تومان را به کارت زیر واریز کنید و رسید را ارسال کنید:\n\n"
-            f"💳 {card}\n\n"
-            "پس از ارسال رسید، منتظر تأیید ادمین بمانید.",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=back_cancel_kb()
+        clear_state(u)
+        _save_db(db)
+        bot.send_message(m.chat.id, "رسید شما ثبت شد؛ منتظر تأیید ادمین… ✅", reply_markup=kb_main(db))
+        notify_admins_new_receipt(db, rid)
+        return
+
+    # --- مراحل آزاد: مراحل پنل ادمین
+    if isadm:
+        # افزودن ادمین با آی‌دی عددی
+        if st.get("flow") == "admin_add" and st.get("step") == "ask_id":
+            if not text.isdigit():
+                bot.send_message(m.chat.id, "لطفاً آیدی عددی معتبر وارد کنید یا «انصراف».", reply_markup=kb_cancel(db))
+                return
+            new_id = int(text)
+            admins = set(db.get("admins", []))
+            admins.add(new_id)
+            db["admins"] = list(admins)
+            clear_state(u)
+            _save_db(db)
+            bot.send_message(m.chat.id, f"✅ ادمین با آیدی <code>{new_id}</code> اضافه شد.", reply_markup=kb_main(db))
+            try:
+                bot.send_message(new_id, "🎉 شما به عنوان ادمین اضافه شدید.")
+            except:
+                pass
+            return
+
+        # حذف ادمین
+        if st.get("flow") == "admin_del" and st.get("step") == "ask_id":
+            if not text.isdigit():
+                bot.send_message(m.chat.id, "لطفاً آیدی عددی معتبر وارد کنید یا «انصراف».", reply_markup=kb_cancel(db))
+                return
+            del_id = int(text)
+            admins = set(db.get("admins", []))
+            if del_id in admins:
+                admins.remove(del_id)
+                db["admins"] = list(admins)
+                clear_state(u)
+                _save_db(db)
+                bot.send_message(m.chat.id, f"🗑 ادمین <code>{del_id}</code> حذف شد.", reply_markup=kb_main(db))
+                try:
+                    bot.send_message(del_id, "⛔️ دسترسی ادمین شما لغو شد.")
+                except:
+                    pass
+            else:
+                bot.send_message(m.chat.id, "کاربری با این آیدی در لیست ادمین نیست.", reply_markup=kb_cancel(db))
+            return
+
+        # تغییر شماره کارت
+        if st.get("flow") == "set_card" and st.get("step") == "ask_card":
+            if len(text.replace("-", "").replace(" ", "")) < 16:
+                bot.send_message(m.chat.id, "شماره کارت معتبر وارد کنید یا «انصراف».", reply_markup=kb_cancel(db))
+                return
+            db["card_number"] = text.strip()
+            clear_state(u)
+            _save_db(db)
+            bot.send_message(m.chat.id, f"✅ شماره کارت ثبت شد:\n<code>{db['card_number']}</code>", reply_markup=kb_main(db))
+            return
+
+        # اعلان همگانی
+        if st.get("flow") == "broadcast" and st.get("step") == "ask_text":
+            msg = text
+            clear_state(u)
+            _save_db(db)
+            sent, failed = 0, 0
+            for k, usr in db["users"].items():
+                try:
+                    bot.send_message(usr["id"], msg)
+                    sent += 1
+                except:
+                    failed += 1
+            bot.send_message(m.chat.id, f"📣 ارسال شد.\nموفق: {sent}\nناموفق: {failed}", reply_markup=kb_main(db))
+            return
+
+        # ساخت کوپن: درصد
+        if st.get("flow") == "coupon" and st.get("step") == "ask_percent":
+            if not text.isdigit():
+                bot.send_message(m.chat.id, "درصد را به‌صورت عدد وارد کنید یا «انصراف».", reply_markup=kb_cancel(db))
+                return
+            set_state(u, step="ask_plan_limit", coupon={"percent": int(text)})
+            _save_db(db)
+            bot.send_message(m.chat.id, "آیا کوپن محدود به پلن خاص باشد؟\n(آیدی پلن را بفرستید یا بنویسید «همه»)", reply_markup=kb_cancel(db))
+            return
+
+        # ساخت کوپن: محدودیت پلن
+        if st.get("flow") == "coupon" and st.get("step") == "ask_plan_limit":
+            cp = u["state"].get("coupon", {})
+            plan_id = None
+            if text != "همه":
+                plan_id = text
+            cp["only_plan_id"] = plan_id
+            set_state(u, step="ask_expire", coupon=cp)
+            _save_db(db)
+            bot.send_message(m.chat.id, "تاریخ انقضا؟\nمثال: 2025-12-31 یا بنویس «بدون»", reply_markup=kb_cancel(db))
+            return
+
+        # ساخت کوپن: تاریخ
+        if st.get("flow") == "coupon" and st.get("step") == "ask_expire":
+            cp = u["state"].get("coupon", {})
+            expire_ts = None
+            if text != "بدون":
+                try:
+                    dt = datetime.strptime(text, "%Y-%m-%d")
+                    expire_ts = int(dt.timestamp())
+                except:
+                    bot.send_message(m.chat.id, "فرمت تاریخ نامعتبر است. مثال: 2025-12-31", reply_markup=kb_cancel(db))
+                    return
+            cp["expire_ts"] = expire_ts
+            set_state(u, step="ask_max_uses", coupon=cp)
+            _save_db(db)
+            bot.send_message(m.chat.id, "سقف تعداد استفاده؟ (عدد یا «بدون»)", reply_markup=kb_cancel(db))
+            return
+
+        # ساخت کوپن: سقف استفاده
+        if st.get("flow") == "coupon" and st.get("step") == "ask_max_uses":
+            cp = u["state"].get("coupon", {})
+            max_uses = None
+            if text != "بدون":
+                if not text.isdigit():
+                    bot.send_message(m.chat.id, "عدد معتبر وارد کنید یا «بدون».", reply_markup=kb_cancel(db))
+                    return
+                max_uses = int(text)
+            cp["max_uses"] = max_uses
+            set_state(u, step="ask_code", coupon=cp)
+            _save_db(db)
+            bot.send_message(m.chat.id, "نام/کد کوپن را بفرستید:", reply_markup=kb_cancel(db))
+            return
+
+        # ساخت کوپن: کد
+        if st.get("flow") == "coupon" and st.get("step") == "ask_code":
+            code = text.strip()
+            if not code:
+                bot.send_message(m.chat.id, "کد معتبر وارد کنید یا «انصراف».", reply_markup=kb_cancel(db))
+                return
+            cp = u["state"].get("coupon", {})
+            cp["used"] = 0
+            db["coupons"][code] = cp
+            clear_state(u)
+            _save_db(db)
+            bot.send_message(m.chat.id, f"✅ کوپن «{code}» ساخته شد.", reply_markup=kb_main(db))
+            return
+
+        # آمار فروش پایه
+        if st.get("flow") == "stats" and st.get("step") == "show":
+            # هیچ ورودی لازم نیست؛ ورود متن یعنی بازگشت
+            clear_state(u)
+            _save_db(db)
+            bot.send_message(m.chat.id, "بازگشت به منوی اصلی.", reply_markup=kb_main(db))
+            return
+
+    # -----------------------------
+    # دکمه‌های منوی اصلی
+    # -----------------------------
+    t = db["texts"]
+    if text == t["btn_buy"]:
+        bot.send_message(m.chat.id, "لطفاً پلن را انتخاب کنید:", reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(m.chat.id, "لیست پلن‌ها:", reply_markup=plans_inline(db))
+        return
+
+    if text == t["btn_wallet"]:
+        # نمایش منوی کیف پول
+        kb = types.InlineKeyboardMarkup()
+        kb.add(
+            types.InlineKeyboardButton("شارژ کیف پول (ارسال رسید)", callback_data="wallet:charge"),
+        )
+        bot.send_message(m.chat.id, f"موجودی فعلی شما: {human_price(u['wallet'])}", reply_markup=kb)
+        return
+
+    if text == t["btn_tickets"]:
+        # تیکت پایه
+        kb = types.InlineKeyboardMarkup()
+        kb.add(
+            types.InlineKeyboardButton("ایجاد تیکت جدید", callback_data="ticket:new"),
+            types.InlineKeyboardButton("تیکت‌های من", callback_data="ticket:list"),
+        )
+        bot.send_message(m.chat.id, "پشتیبانی:", reply_markup=kb)
+        return
+
+    if text == t["btn_account"]:
+        count = len(u["buys"])
+        bot.send_message(
+            m.chat.id,
+            f"👤 آیدی: <code>{u['id']}</code>\n"
+            f"یوزرنیم: @{u['username']}\n"
+            f"تعداد کانفیگ‌های خریداری‌شده: {count}\n"
+            f"موجودی کیف پول: {human_price(u['wallet'])}",
+            reply_markup=kb_main(db)
         )
         return
 
-    if cd == "wallet":
-        clear_state(uid)
-        u = data["users"][str(uid)]
-        bot.edit_message_text(
-            f"موجودی شما: {fmt_money(u['wallet'])} تومان",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=wallet_menu()
-        )
+    if text == t["btn_admin"] and isadm:
+        show_admin_menu(db, m.chat.id)
         return
 
-    if cd == "wallet_charge":
-        # کاربر می‌خواهد شارژ کند => فقط رسید بخواهد (مبلغ آزاد)
-        set_state(uid, flow="wallet", await="wallet_receipt_ask_amount")
-        bot.edit_message_text(
-            "مبلغ شارژ (تومان) را بفرستید:\n"
-            "مثال: 150000",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=back_cancel_kb()
-        )
+    # اگر به هیچ‌کدام نخورد و state آزاد هم نبود:
+    bot.send_message(m.chat.id, "از دکمه‌ها استفاده کنید یا «انصراف/بازگشت».", reply_markup=kb_main(db))
+
+# -----------------------------
+# کیف پول: شارژ با رسید
+# -----------------------------
+@bot.callback_query_handler(func=lambda c: c.data == "wallet:charge")
+def cb_wallet_charge(c):
+    db = _load_db()
+    u = get_user(db, c.from_user.id, c.from_user.username)
+    set_state(u, flow="wallet", step="upload_receipt_wallet")
+    _save_db(db)
+    card = db.get("card_number", DEFAULT_CARD)
+    msg = (
+        "برای شارژ کیف پول، مبلغ مورد نظر را کارت‌به‌کارت کنید:\n\n"
+        f"💳 شماره کارت: <code>{card}</code>\n"
+        "📝 سپس «رسید» را همین‌جا ارسال کنید.\n\n"
+        "یا «انصراف» را بزنید."
+    )
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, msg, reply_markup=kb_cancel(db))
+
+# پیام رسید کیف پول
+@bot.message_handler(content_types=["photo", "document", "text"])
+def on_any_message(m):
+    # این هندلر پایین‌تر از on_message تعریف شده؛ فقط وقتی به آن نخورَد می‌آید
+    db = _load_db()
+    u = get_user(db, m.from_user.id, m.from_user.username)
+    st = u.get("state", {})
+
+    # رسید شارژ کیف پول
+    if st.get("flow") == "wallet" and st.get("step") == "upload_receipt_wallet":
+        rid = next_id("rcp")
+        db["receipts"][rid] = {
+            "id": rid,
+            "uid": u["id"],
+            "username": u.get("username", ""),
+            "type": "wallet_charge",
+            "amount": None,  # ادمین وارد می‌کند
+            "plan_id": None,
+            "status": "pending",
+            "note": "wallet_charge",
+            "ts": _now_ts(),
+            "message_id": m.message_id
+        }
+        clear_state(u)
+        _save_db(db)
+        bot.send_message(m.chat.id, "رسید شما ثبت شد؛ منتظر تأیید ادمین… ✅", reply_markup=kb_main(db))
+        notify_admins_new_receipt(db, rid)
         return
 
-    if cd == "wallet_tx":
-        # نمایش تاریخچه تراکنش‌ها از orders + receipts تایید شده
-        uid_s = str(uid)
-        orders = [o for o in db_load()["orders"].values() if str(o["user_id"]) == uid_s]
-        receipts = [r for r in db_load()["receipts"].values()
-                    if str(r["user_id"]) == uid_s and r.get("status") == "approved"]
-        msg = "📜 تاریخچه:\n"
-        if not orders and not receipts:
-            msg += "موردی یافت نشد."
-        else:
-            for r in sorted(receipts, key=lambda x: x["id"], reverse=True)[:10]:
-                msg += f"✅ شارژ کیف پول: +{fmt_money(r.get('amount_set', r.get('amount_expected', 0)))} | #{r['id']}\n"
-            for o in sorted(orders, key=lambda x: x["id"], reverse=True)[:10]:
-                msg += f"🧾 خرید پلن #{o['plan_id']}: -{fmt_money(o['amount'])} | {o['paid_via']}\n"
-        bot.edit_message_text(
-            msg,
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=wallet_menu()
-        )
+    # تیکت جدید: دریافت متن
+    if st.get("flow") == "ticket" and st.get("step") == "ask_text":
+        txt = (m.text or "").strip()
+        if not txt:
+            bot.send_message(m.chat.id, "لطفاً متن تیکت را بنویسید یا «انصراف».", reply_markup=kb_cancel(db))
+            return
+        tid = next_id("tkt")
+        ticket = {
+            "id": tid,
+            "uid": u["id"],
+            "subject": st.get("subject", "بدون موضوع"),
+            "messages": [
+                {"from": "user", "text": txt, "ts": _now_ts()}
+            ],
+            "status": "open",
+            "ts": _now_ts()
+        }
+        u["tickets"].append(tid)
+        # در DB در سطح root ذخیره کنیم
+        db.setdefault("tickets", {})[tid] = ticket
+        clear_state(u)
+        _save_db(db)
+        bot.send_message(m.chat.id, "تیکت ساخته شد ✅", reply_markup=kb_main(db))
+        notify_admins_new_ticket(db, ticket)
         return
 
-    if cd == "tickets":
-        clear_state(uid)
-        bot.edit_message_text(
-            "بخش تیکت پشتیبانی:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=tickets_menu()
-        )
+    # اگر اینجا رسید، یعنی state آزاد نبود؛ پاس بده به on_message که قبلاً هندل شده
+    # (عملاً کاری لازم نیست بکنیم)
+    return
+
+# -----------------------------
+# تیکت‌ها
+# -----------------------------
+@bot.callback_query_handler(func=lambda c: c.data == "ticket:new")
+def cb_ticket_new(c):
+    db = _load_db()
+    u = get_user(db, c.from_user.id, c.from_user.username)
+    set_state(u, flow="ticket", step="ask_subject")
+    _save_db(db)
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, "موضوع تیکت را انتخاب کنید:", reply_markup=ticket_subjects())
+
+def ticket_subjects():
+    ik = types.InlineKeyboardMarkup()
+    ik.add(
+        types.InlineKeyboardButton("مشکل خرید", callback_data="ticket:sub:buy"),
+        types.InlineKeyboardButton("مشکل کانفیگ", callback_data="ticket:sub:config"),
+    )
+    ik.add(types.InlineKeyboardButton("انصراف", callback_data="cancel"))
+    return ik
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ticket:sub:"))
+def cb_ticket_sub(c):
+    db = _load_db()
+    u = get_user(db, c.from_user.id, c.from_user.username)
+    subject = c.data.split(":")[-1]
+    set_state(u, flow="ticket", step="ask_text", subject=subject)
+    _save_db(db)
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, "متن تیکت را بنویسید:", reply_markup=kb_cancel(db))
+
+@bot.callback_query_handler(func=lambda c: c.data == "ticket:list")
+def cb_ticket_list(c):
+    db = _load_db()
+    u = get_user(db, c.from_user.id, c.from_user.username)
+    tickets = [db.get("tickets", {}).get(tid) for tid in u.get("tickets", [])]
+    tickets = [t for t in tickets if t]
+    if not tickets:
+        bot.answer_callback_query(c.id)
+        bot.send_message(c.message.chat.id, "هیچ تیکتی ندارید.", reply_markup=kb_main(db))
         return
+    msg = "تیکت‌های شما:\n\n"
+    for t in tickets:
+        msg += f"#{t['id']} | وضعیت: {t['status']} | موضوع: {t['subject']}\n"
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, msg, reply_markup=kb_main(db))
 
-    if cd == "tkt_new":
-        set_state(uid, flow="ticket", await="ticket_subject")
-        bot.edit_message_text(
-            "موضوع تیکت را بفرستید:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=back_cancel_kb()
-        )
-        return
-
-    if cd == "tkt_my":
-        # لیست تیکت‌های کاربر
-        ts = [t for t in db_load()["tickets"].values() if str(t["user_id"]) == str(uid)]
-        if not ts:
-            txt = "شما هیچ تیکتی ندارید."
-        else:
-            txt = "تیکت‌های شما:\n"
-            for t in sorted(ts, key=lambda x: x["id"], reverse=True)[:10]:
-                status = t.get("status", "open")
-                txt += f"#{t['id']} | {t['subject']} | {status}\n"
-        bot.edit_message_text(
-            txt,
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=tickets_menu()
-        )
-        return
-
-    # پنل ادمین
-    if cd == "admin":
-        if not is_admin(uid):
-            bot.answer_callback_query(c.id, "دسترسی ندارید.")
-            return
-        clear_state(uid)
-        bot.edit_message_text(
-            "پنل ادمین:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=admin_menu()
-        )
-        return
-
-    if cd == "adm_admins":
-        if not is_admin(uid):
-            bot.answer_callback_query(c.id, "دسترسی ندارید.")
-            return
-        clear_state(uid)
-        bot.edit_message_text(
-            "مدیریت ادمین‌ها:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=admins_menu()
-        )
-        return
-
-    if cd == "adm_admin_add":
-        if not is_admin(uid):
-            return
-        set_state(uid, flow="adm_admins", await="admin_add_id")
-        bot.edit_message_text(
-            "آیدی عددی یا یوزرنیم (با @) ادمین جدید را بفرستید:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=back_cancel_kb()
-        )
-        return
-
-    if cd == "adm_admin_del":
-        if not is_admin(uid):
-            return
-        set_state(uid, flow="adm_admins", await="admin_del_id")
-        bot.edit_message_text(
-            "آیدی عددی یا یوزرنیم (با @) ادمین را بفرستید تا حذف شود:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=back_cancel_kb()
-        )
-        return
-
-    if cd == "adm_admin_list":
-        if not is_admin(uid):
-            return
-        admins = db_load()["admins"]
-        msg = "فهرست ادمین‌ها:\n" + "\n".join([f"- {a}" for a in admins]) if admins else "لیست خالی است."
-        bot.edit_message_text(
-            msg,
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=admins_menu()
-        )
-        return
-
-    if cd == "adm_plans":
-        if not is_admin(uid):
-            return
-        clear_state(uid)
-        bot.edit_message_text(
-            "مدیریت پلن‌ها و مخزن:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=plans_menu()
-        )
-        return
-
-    if cd == "plan_add":
-        if not is_admin(uid):
-            return
-        set_state(uid, flow="plans", await="plan_add_name")
-        bot.edit_message_text(
-            "نام پلن جدید را بفرستید:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=back_cancel_kb()
-        )
-        return
-
-    if cd == "plan_edit":
-        if not is_admin(uid):
-            return
-        # نمایش لیست پلن‌ها جهت انتخاب
-        data = db_load()
-        plans = list(data["plans"].values())
-        plans.sort(key=lambda x: x["id"])
-        if not plans:
-            bot.answer_callback_query(c.id, "هیچ پلنی وجود ندارد.")
-            return
-        kb = InlineKeyboardMarkup()
-        for p in plans:
-            kb.row(InlineKeyboardButton(f"✏️ {p['id']} - {p['name']}", callback_data=f"plan_edit_id:{p['id']}"))
-        kb.row(InlineKeyboardButton("↩️ بازگشت", callback_data="adm_plans"))
-        bot.edit_message_text(
-            "پلن موردنظر برای ویرایش را انتخاب کنید:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=kb
-        )
-        return
-
-    if cd.startswith("plan_edit_id:"):
-        if not is_admin(uid):
-            return
-        pid = cd.split(":",1)[1]
-        set_state(uid, flow="plans", await="plan_edit_field", edit_plan_id=pid)
-        kb = InlineKeyboardMarkup()
-        kb.row(InlineKeyboardButton("نام", callback_data="pef:name"))
-        kb.row(InlineKeyboardButton("مدت (روز)", callback_data="pef:days"))
-        kb.row(InlineKeyboardButton("حجم (GB)", callback_data="pef:gb"))
-        kb.row(InlineKeyboardButton("قیمت (تومان)", callback_data="pef:price"))
-        kb.row(InlineKeyboardButton("توضیح", callback_data="pef:desc"))
-        kb.row(InlineKeyboardButton("↩️ بازگشت", callback_data="adm_plans"))
-        bot.edit_message_text(
-            f"ویرایش پلن #{pid} — یک فیلد را انتخاب کنید:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=kb
-        )
-        return
-
-    if cd.startswith("pef:"):
-        if not is_admin(uid):
-            return
-        field = cd.split(":",1)[1]
-        st = get_state(uid)
-        if not st.get("edit_plan_id"):
-            bot.answer_callback_query(c.id, "پلن انتخاب نشده.")
-            return
-        set_state(uid, await=f"plan_edit_input:{field}")
-        bot.edit_message_text(
-            f"مقدار جدید برای «{field}» را بفرستید:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=back_cancel_kb()
-        )
-        return
-
-    if cd == "plan_del":
-        if not is_admin(uid):
-            return
-        # لیست پلن‌ها برای حذف
-        plans = list(db_load()["plans"].values())
-        plans.sort(key=lambda x: x["id"])
-        if not plans:
-            bot.answer_callback_query(c.id, "هیچ پلنی وجود ندارد.")
-            return
-        kb = InlineKeyboardMarkup()
-        for p in plans:
-            kb.row(InlineKeyboardButton(f"🗑 {p['id']} - {p['name']}", callback_data=f"plan_del_id:{p['id']}"))
-        kb.row(InlineKeyboardButton("↩️ بازگشت", callback_data="adm_plans"))
-        bot.edit_message_text(
-            "پلن مورد نظر برای حذف را انتخاب کنید:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=kb
-        )
-        return
-
-    if cd.startswith("plan_del_id:"):
-        if not is_admin(uid):
-            return
-        pid = cd.split(":",1)[1]
-        data = db_load()
-        data["plans"].pop(str(pid), None)
-        data["inventory"].pop(str(pid), None)
-        db_save(data)
-        bot.answer_callback_query(c.id, "پلن حذف شد.")
-        bot.edit_message_text(
-            "مدیریت پلن‌ها و مخزن:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=plans_menu()
-        )
-        return
-
-    if cd == "inv_manage":
-        if not is_admin(uid):
-            return
-        # انتخاب پلن برای مدیریت مخزن
-        data = db_load()
-        plans = list(data["plans"].values())
-        plans.sort(key=lambda x: x["id"])
-        if not plans:
-            bot.answer_callback_query(c.id, "هیچ پلنی وجود ندارد.")
-            return
-        kb = InlineKeyboardMarkup()
-        for p in plans:
-            kb.row(InlineKeyboardButton(f"📥 مخزن پلن {p['id']} - {p['name']}", callback_data=f"inv_plan:{p['id']}"))
-        kb.row(InlineKeyboardButton("↩️ بازگشت", callback_data="adm_plans"))
-        bot.edit_message_text(
-            "پلن موردنظر برای مدیریت مخزن را انتخاب کنید:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=kb
-        )
-        return
-
-    if cd.startswith("inv_plan:"):
-        if not is_admin(uid):
-            return
-        pid = cd.split(":",1)[1]
-        set_state(uid, flow="inventory", plan_id=pid)
-        kb = InlineKeyboardMarkup()
-        kb.row(InlineKeyboardButton("➕ افزودن کانفیگ", callback_data="inv_add"))
-        kb.row(InlineKeyboardButton("🗑 حذف یک کانفیگ", callback_data="inv_pop"))
-        kb.row(InlineKeyboardButton("📊 موجودی مخزن", callback_data="inv_list"))
-        kb.row(InlineKeyboardButton("↩️ بازگشت", callback_data="adm_plans"))
-        bot.edit_message_text(
-            f"مدیریت مخزن پلن #{pid}:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=kb
-        )
-        return
-
-    if cd == "inv_add":
-        if not is_admin(uid):
-            return
-        set_state(uid, await="inv_add_text")
-        bot.edit_message_text(
-            "متن کانفیگ را بفرستید (بعداً می‌توانید عکس هم بفرستید؛ فعلاً متن اجباری است):",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=back_cancel_kb()
-        )
-        return
-
-    if cd == "inv_pop":
-        if not is_admin(uid):
-            return
-        st = get_state(uid)
-        pid = st.get("plan_id")
-        data = db_load()
-        inv = data["inventory"].get(str(pid), [])
-        if not inv:
-            bot.answer_callback_query(c.id, "مخزن خالی است.")
-            return
-        inv.pop(0)
-        data["inventory"][str(pid)] = inv
-        db_save(data)
-        bot.answer_callback_query(c.id, "یک کانفیگ حذف شد.")
-        return
-
-    if cd == "inv_list":
-        if not is_admin(uid):
-            return
-        st = get_state(uid)
-        pid = st.get("plan_id")
-        inv = db_load()["inventory"].get(str(pid), [])
-        bot.answer_callback_query(c.id, f"تعداد موجودی: {len(inv)}")
-        return
-
-    if cd == "adm_coupons":
-        if not is_admin(uid):
-            return
-        clear_state(uid)
-        bot.edit_message_text(
-            "مدیریت کدهای تخفیف:",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=coupons_menu()
-        )
-        return
-
-    if cd == "coupon_new":
-        if not is_admin(uid):
-            return
-        # مرحله‌ای: درصد → محدود به پلن؟ → تاریخ انقضا → سقف استفاده → کد
-        set_state(uid, flow="coupon", await="coupon_percent", coupon={})
-        bot.edit_message_text(
-            "درصد تخفیف را وارد کنید (0 تا 100):",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            reply_markup=back_cancel_kb()
-        )
-        return# ادامه main.py
-
-# -------------------------------
-# مدیریت دکمه‌ها و متون
-# -------------------------------
-@bot.message_handler(func=lambda m: get_state(m.from_user.id) == "manage_buttons")
-def manage_buttons(msg):
-    uid = msg.from_user.id
-    text = msg.text
-    if text == "🔙 انصراف":
-        clear_state(uid)
-        return bot.send_message(uid, "به منوی اصلی برگشتی.", reply_markup=admin_panel())
-
-    buttons = get_buttons()
-    if text in buttons:
-        set_state(uid, "edit_button_text", editing=text)
-        return bot.send_message(uid, f"متن فعلی دکمه «{text}» 👇\n\nحالا متن جدید رو بفرست:", reply_markup=cancel_markup())
-    else:
-        return bot.send_message(uid, "از دکمه‌ها استفاده کنید.", reply_markup=buttons_markup(buttons))
-
-
-@bot.message_handler(func=lambda m: get_state(m.from_user.id) == "edit_button_text")
-def edit_button_text(msg):
-    uid = msg.from_user.id
-    st = get_state(uid)
-    if not st or "editing" not in st:
-        return bot.send_message(uid, "خطا! لطفاً دوباره تلاش کنید.")
-    new_text = msg.text.strip()
-    old_text = st["editing"]
-    update_button(old_text, new_text)
-    clear_state(uid)
-    bot.send_message(uid, f"✅ دکمه «{old_text}» به «{new_text}» تغییر کرد.", reply_markup=admin_panel())
-
-# -------------------------------
-# مدیریت ادمین‌ها
-# -------------------------------
-@bot.message_handler(func=lambda m: get_state(m.from_user.id) == "manage_admins")
-def manage_admins(msg):
-    uid = msg.from_user.id
-    text = msg.text
-    if text == "➕ افزودن ادمین":
-        set_state(uid, "add_admin")
-        return bot.send_message(uid, "آیدی عددی یا یوزرنیم فرد رو وارد کن:", reply_markup=cancel_markup())
-    elif text.startswith("❌ حذف "):
-        tid = text.replace("❌ حذف ", "").strip()
-        remove_admin(tid)
-        bot.send_message(uid, f"ادمین {tid} حذف شد ❌")
+# -----------------------------
+# اعلانات برای ادمین‌ها
+# -----------------------------
+def notify_admins_new_receipt(db, rid):
+    admins = set(db.get("admins", []))
+    r = db["receipts"][rid]
+    cap = (
+        f"🧾 رسید جدید\n"
+        f"نوع: {r['type']}\n"
+        f"کاربر: @{r.get('username','') or '-'} ({r['uid']})\n"
+        f"رسید: {rid}\n"
+        f"وضعیت: {r['status']}"
+    )
+    ik = types.InlineKeyboardMarkup()
+    ik.add(
+        types.InlineKeyboardButton("تأیید و ورود مبلغ", callback_data=f"adm:rcp:approve:{rid}"),
+        types.InlineKeyboardButton("رد رسید", callback_data=f"adm:rcp:reject:{rid}"),
+    )
+    for aid in admins:
         try:
-            bot.send_message(int(tid), "⚠️ شما از لیست ادمین‌ها حذف شدید.")
+            bot.send_message(aid, cap, reply_markup=ik)
         except:
             pass
-    elif text == "🔙 بازگشت":
-        clear_state(uid)
-        return bot.send_message(uid, "بازگشتی به منوی اصلی.", reply_markup=admin_panel())
-    else:
-        bot.send_message(uid, "از دکمه‌ها استفاده کنید.", reply_markup=admin_manage_markup())
 
-
-@bot.message_handler(func=lambda m: get_state(m.from_user.id) == "add_admin")
-def add_admin_handler(msg):
-    uid = msg.from_user.id
-    tid = msg.text.strip()
-    if tid.startswith("@"):
-        tid = tid[1:]
-    if not tid.isdigit():
+def notify_admins_new_ticket(db, ticket):
+    admins = set(db.get("admins", []))
+    cap = (
+        f"🎫 تیکت جدید\n"
+        f"کاربر: @{db['users'][str(ticket['uid'])].get('username','') or '-'} ({ticket['uid']})\n"
+        f"#{ticket['id']} | موضوع: {ticket['subject']}"
+    )
+    for aid in admins:
         try:
-            user = bot.get_chat(tid)
-            tid = str(user.id)
+            bot.send_message(aid, cap)
         except:
-            return bot.send_message(uid, "❌ آیدی یا یوزرنیم نامعتبره.", reply_markup=cancel_markup())
+            pass
 
-    add_admin(tid)
-    clear_state(uid)
-    bot.send_message(uid, f"✅ کاربر {tid} ادمین شد.", reply_markup=admin_panel())
+# -----------------------------
+# پنل ادمین (پایه)
+# -----------------------------
+def show_admin_menu(db, chat_id):
+    ik = types.InlineKeyboardMarkup()
+    ik.add(
+        types.InlineKeyboardButton("👑 مدیریت ادمین‌ها", callback_data="adm:admins"),
+        types.InlineKeyboardButton("💳 شماره کارت", callback_data="adm:card"),
+    )
+    ik.add(
+        types.InlineKeyboardButton("🧾 رسیدهای در انتظار", callback_data="adm:receipts"),
+        types.InlineKeyboardButton("🏷 ساخت کد تخفیف", callback_data="adm:coupon"),
+    )
+    ik.add(
+        types.InlineKeyboardButton("📦 پلن‌ها/مخزن (نمای پایه)", callback_data="adm:plans"),
+        types.InlineKeyboardButton("📣 اعلان همگانی", callback_data="adm:broadcast"),
+    )
+    ik.add(
+        types.InlineKeyboardButton("📊 آمار فروش", callback_data="adm:stats"),
+        types.InlineKeyboardButton("بازگشت", callback_data="cancel"),
+    )
+    bot.send_message(chat_id, "🛠 پنل ادمین:", reply_markup=ik)
+
+@bot.callback_query_handler(func=lambda c: c.data == "adm:admins")
+def cb_adm_admins(c):
+    db = _load_db()
+    uid = c.from_user.id
+    if not is_admin(db, uid): return
+    admins = db.get("admins", [])
+    txt = "ادمین‌ها:\n" + "\n".join([f"- <code>{a}</code>" for a in admins]) if admins else "ادمین ثبت نشده."
+    ik = types.InlineKeyboardMarkup()
+    ik.add(
+        types.InlineKeyboardButton("➕ افزودن ادمین", callback_data="adm:admins:add"),
+        types.InlineKeyboardButton("🗑 حذف ادمین", callback_data="adm:admins:del"),
+    )
+    ik.add(types.InlineKeyboardButton("بازگشت", callback_data="cancel"))
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, txt, reply_markup=ik)
+
+@bot.callback_query_handler(func=lambda c: c.data == "adm:admins:add")
+def cb_adm_admins_add(c):
+    db = _load_db()
+    u = get_user(db, c.from_user.id, c.from_user.username)
+    if not is_admin(db, u["id"]): return
+    set_state(u, flow="admin_add", step="ask_id")
+    _save_db(db)
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, "آیدی عددی ادمین جدید را بفرستید:", reply_markup=kb_cancel(db))
+
+@bot.callback_query_handler(func=lambda c: c.data == "adm:admins:del")
+def cb_adm_admins_del(c):
+    db = _load_db()
+    u = get_user(db, c.from_user.id, c.from_user.username)
+    if not is_admin(db, u["id"]): return
+    set_state(u, flow="admin_del", step="ask_id")
+    _save_db(db)
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, "آیدی عددی ادمین مورد نظر برای حذف را بفرستید:", reply_markup=kb_cancel(db))
+
+@bot.callback_query_handler(func=lambda c: c.data == "adm:card")
+def cb_adm_card(c):
+    db = _load_db()
+    u = get_user(db, c.from_user.id, c.from_user.username)
+    if not is_admin(db, u["id"]): return
+    set_state(u, flow="set_card", step="ask_card")
+    _save_db(db)
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, "شماره کارت جدید را بفرستید:", reply_markup=kb_cancel(db))
+
+@bot.callback_query_handler(func=lambda c: c.data == "adm:receipts")
+def cb_adm_receipts(c):
+    db = _load_db()
+    if not is_admin(db, c.from_user.id): return
+    pend = [r for r in db["receipts"].values() if r["status"] == "pending"]
+    if not pend:
+        bot.answer_callback_query(c.id)
+        bot.send_message(c.message.chat.id, "رسید در انتظاری وجود ندارد.")
+        return
+    for r in pend:
+        cap = (
+            f"🧾 رسید در انتظار\n"
+            f"#{r['id']} | نوع: {r['type']}\n"
+            f"کاربر: @{r.get('username','') or '-'} ({r['uid']})\n"
+            f"پیام: {r.get('message_id','-')}"
+        )
+        ik = types.InlineKeyboardMarkup()
+        ik.add(
+            types.InlineKeyboardButton("تأیید و ورود مبلغ", callback_data=f"adm:rcp:approve:{r['id']}"),
+            types.InlineKeyboardButton("رد رسید", callback_data=f"adm:rcp:reject:{r['id']}"),
+        )
+        bot.send_message(c.message.chat.id, cap, reply_markup=ik)
+    bot.answer_callback_query(c.id)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("adm:rcp:approve:"))
+def cb_adm_rcp_approve(c):
+    db = _load_db()
+    if not is_admin(db, c.from_user.id): return
+    rid = c.data.split(":")[-1]
+    r = db["receipts"].get(rid)
+    if not r:
+        bot.answer_callback_query(c.id, "یافت نشد.")
+        return
+    # درخواست مبلغ
+    r["status"] = "await_amount"
+    _save_db(db)
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, f"مبلغ نهایی برای رسید #{rid} را وارد کنید (به تومان):", reply_markup=kb_cancel(db))
+    # ثبت state برای ادمینی که دارد وارد می‌کند
+    u = get_user(db, c.from_user.id, c.from_user.username)
+    set_state(u, flow="rcp_amount", step="ask_amount", rid=rid)
+    _save_db(db)
+
+@bot.message_handler(func=lambda m: True)
+def on_message_admin_rcp_amount(m):
+    # این هندلر پایین‌دستی است و روی همه پیام‌ها می‌آید؛ اما ما فقط اگر state مربوط باشد عمل می‌کنیم
+    db = _load_db()
+    u = get_user(db, m.from_user.id, m.from_user.username)
+    st = u.get("state", {})
+    if st.get("flow") == "rcp_amount" and st.get("step") == "ask_amount":
+        rid = st.get("rid")
+        if not rid or rid not in db["receipts"]:
+            clear_state(u); _save_db(db)
+            bot.send_message(m.chat.id, "رسید یافت نشد.", reply_markup=kb_main(db))
+            return
+        val = (m.text or "").strip().replace(",", "")
+        if not val.isdigit():
+            bot.send_message(m.chat.id, "لطفاً عدد معتبر وارد کنید یا «انصراف».", reply_markup=kb_cancel(db))
+            return
+        amount = int(val)
+        r = db["receipts"][rid]
+        r["amount"] = amount
+        # اعمال اثر رسید
+        if r["type"] == "wallet_charge":
+            usr = get_user(db, r["uid"])
+            usr["wallet"] += amount
+            r["status"] = "approved"
+            # اطلاع به کاربر
+            try:
+                bot.send_message(r["uid"], f"✅ رسید شما تأیید شد. کیف پول به میزان {human_price(amount)} شارژ شد.")
+            except:
+                pass
+
+        elif r["type"] == "charge_diff":
+            # فقط شارژ می‌کنیم، سپس ادمین باید خرید را دستی تکمیل کند یا ساده بگیریم: همان لحظه خرید تکمیل شود اگر plan_id موجود و stock>0
+            usr = get_user(db, r["uid"])
+            usr["wallet"] += amount
+            r["status"] = "approved"
+            # تلاش برای خرید خودکار
+            pid = r.get("plan_id")
+            if pid and pid in db["plans"] and db["plans"][pid].get("stock"):
+                price = db["plans"][pid]["price"]
+                if usr["wallet"] >= price:
+                    usr["wallet"] -= price
+                    conf = db["plans"][pid]["stock"].pop(0)
+                    sale = {
+                        "id": next_id("sale"),
+                        "uid": usr["id"],
+                        "pid": pid,
+                        "price": price,
+                        "final": price,
+                        "coupon": "",
+                        "ts": _now_ts()
+                    }
+                    db["sales"].append(sale)
+                    usr["buys"].append(sale["id"])
+                    try:
+                        bot.send_message(usr["id"], f"✅ خرید شما تکمیل شد.\n{conf}")
+                    except:
+                        pass
+        elif r["type"] == "buy_bank":
+            # خرید از روی رسید بانک: نیاز به plan_id
+            pid = r.get("plan_id")
+            if not pid or pid not in db["plans"] or not db["plans"][pid].get("stock"):
+                r["status"] = "approved"
+                try:
+                    bot.send_message(r["uid"], "✅ رسید شما تأیید شد. اما موجودی پلن کافی نبود؛ با پشتیبانی در تماس باشید.")
+                except:
+                    pass
+            else:
+                p = db["plans"][pid]
+                price = p["price"]
+                conf = p["stock"].pop(0)
+                sale = {
+                    "id": next_id("sale"),
+                    "uid": r["uid"],
+                    "pid": pid,
+                    "price": price,
+                    "final": price,
+                    "coupon": "",
+                    "ts": _now_ts()
+                }
+                db["sales"].append(sale)
+                get_user(db, r["uid"])["buys"].append(sale["id"])
+                r["status"] = "approved"
+                try:
+                    bot.send_message(r["uid"], f"✅ خرید شما تأیید شد و کانفیگ ارسال گردید.\n{conf}")
+                except:
+                    pass
+        _save_db(db)
+        clear_state(u); _save_db(db)
+        bot.send_message(m.chat.id, "✅ ثبت شد.", reply_markup=kb_main(db))
+        return
+
+# رد رسید
+@bot.callback_query_handler(func=lambda c: c.data.startswith("adm:rcp:reject:"))
+def cb_adm_rcp_reject(c):
+    db = _load_db()
+    if not is_admin(db, c.from_user.id): return
+    rid = c.data.split(":")[-1]
+    r = db["receipts"].get(rid)
+    if not r:
+        bot.answer_callback_query(c.id, "یافت نشد.")
+        return
+    r["status"] = "rejected"
+    _save_db(db)
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, "رسید رد شد.")
     try:
-        bot.send_message(int(tid), "🎉 شما به عنوان ادمین ربات انتخاب شدید.")
+        bot.send_message(r["uid"], "❌ رسید شما رد شد. در صورت ابهام با پشتیبانی در تماس باشید.")
     except:
         pass
 
-# -------------------------------
-# ساخت کد تخفیف
-# -------------------------------
-@bot.message_handler(func=lambda m: get_state(m.from_user.id) == "create_coupon")
-def create_coupon(msg):
-    uid = msg.from_user.id
-    val = msg.text.strip()
-    if not val.isdigit():
-        return bot.send_message(uid, "❌ درصد تخفیف باید عدد باشه.", reply_markup=cancel_markup())
-    set_state(uid, "create_coupon_plan", coupon={"percent": int(val)})
-    bot.send_message(uid, "🔑 حالا کد تخفیف رو بفرست:", reply_markup=cancel_markup())
+# ساخت کوپن
+@bot.callback_query_handler(func=lambda c: c.data == "adm:coupon")
+def cb_adm_coupon(c):
+    db = _load_db()
+    u = get_user(db, c.from_user.id, c.from_user.username)
+    if not is_admin(db, u["id"]): return
+    set_state(u, flow="coupon", step="ask_percent")
+    _save_db(db)
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, "درصد تخفیف را (عدد ۰ تا ۱۰۰) بفرستید:", reply_markup=kb_cancel(db))
 
-
-@bot.message_handler(func=lambda m: get_state(m.from_user.id) == "create_coupon_plan")
-def create_coupon_plan(msg):
-    uid = msg.from_user.id
-    st = get_state(uid)
-    if not st or "coupon" not in st:
-        return bot.send_message(uid, "خطا!")
-    code = msg.text.strip()
-    percent = st["coupon"]["percent"]
-    save_coupon(code, percent)
-    clear_state(uid)
-    bot.send_message(uid, f"✅ کد تخفیف {code} با {percent}% ساخته شد.", reply_markup=admin_panel())
-
-# -------------------------------
 # اعلان همگانی
-# -------------------------------
-@bot.message_handler(func=lambda m: get_state(m.from_user.id) == "broadcast")
-def broadcast(msg):
-    uid = msg.from_user.id
-    text = msg.text
-    users = get_all_users()
-    count = 0
-    for u in users:
-        try:
-            bot.send_message(u, text)
-            count += 1
-        except:
-            pass
-    clear_state(uid)
-    bot.send_message(uid, f"📢 اعلان برای {count} کاربر ارسال شد.", reply_markup=admin_panel())
+@bot.callback_query_handler(func=lambda c: c.data == "adm:broadcast")
+def cb_adm_broadcast(c):
+    db = _load_db()
+    u = get_user(db, c.from_user.id, c.from_user.username)
+    if not is_admin(db, u["id"]): return
+    set_state(u, flow="broadcast", step="ask_text")
+    _save_db(db)
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, "متن اعلان همگانی را بفرستید:", reply_markup=kb_cancel(db))
 
-# -------------------------------
-# تیکت‌ها
-# -------------------------------
-@bot.message_handler(func=lambda m: get_state(m.from_user.id) == "new_ticket")
-def new_ticket(msg):
-    uid = msg.from_user.id
-    text = msg.text
-    tid = save_ticket(uid, text)
-    clear_state(uid)
-    bot.send_message(uid, "🎫 تیکت شما ثبت شد. پشتیبانی به زودی پاسخ میده.", reply_markup=main_menu())
-    notify_admins(f"📩 تیکت جدید #{tid} از کاربر {uid}\n\n{text}")
+# آمار فروش پایه
+@bot.callback_query_handler(func=lambda c: c.data == "adm:stats")
+def cb_adm_stats(c):
+    db = _load_db()
+    if not is_admin(db, c.from_user.id): return
+    # محاسبه ساده
+    total_count = len(db["sales"])
+    total_sum = sum([s["final"] for s in db["sales"]])
+    # Top buyers
+    spend = {}
+    for s in db["sales"]:
+        spend[s["uid"]] = spend.get(s["uid"], 0) + s["final"]
+    top = sorted(spend.items(), key=lambda x: x[1], reverse=True)[:5]
+    lines = [f"📊 آمار فروش",
+             f"تعداد فروش: {total_count}",
+             f"مجموع فروش: {human_price(total_sum)}",
+             "Top Buyers:"]
+    for uid, amt in top:
+        un = db["users"].get(str(uid), {}).get("username", "")
+        lines.append(f"- @{un or '-'} ({uid}): {human_price(amt)}")
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, "\n".join(lines), reply_markup=kb_main(db))
 
-# -------------------------------
-# آمار فروش
-# -------------------------------
-@bot.message_handler(func=lambda m: get_state(m.from_user.id) == "stats")
-def stats(msg):
-    uid = msg.from_user.id
-    total_sold, total_amount, top_buyers = get_sales_stats()
-    txt = f"📊 آمار فروش:\n\n"
-    txt += f"📦 تعداد کانفیگ‌های فروخته‌شده: {total_sold}\n"
-    txt += f"💰 مجموع فروش: {total_amount:,} تومان\n\n"
-    txt += "🏆 برترین خریداران:\n"
-    for i, buyer in enumerate(top_buyers, start=1):
-        txt += f"{i}. {buyer['username']} | {buyer['count']} کانفیگ | {buyer['spent']:,} تومان\n"
-    clear_state(uid)
-    bot.send_message(uid, txt, reply_markup=admin_panel())
+# پلن‌ها/مخزن (نمای پایه - فهرست)
+@bot.callback_query_handler(func=lambda c: c.data == "adm:plans")
+def cb_adm_plans(c):
+    db = _load_db()
+    if not is_admin(db, c.from_user.id): return
+    if not db["plans"]:
+        bot.answer_callback_query(c.id)
+        bot.send_message(c.message.chat.id, "فعلاً پلنی ثبت نشده.", reply_markup=kb_main(db))
+        return
+    msg = "📦 پلن‌ها:\n"
+    for pid, p in db["plans"].items():
+        msg += f"- {pid} | {p['name']} | قیمت {human_price(p['price'])} | موجودی {len(p.get('stock', []))}\n"
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id, msg, reply_markup=kb_main(db))
 
-# -------------------------------
-# استارت
-# -------------------------------
-@bot.message_handler(commands=["start"])
-def start(msg):
-    uid = msg.from_user.id
-    add_user(uid)
-    bot.send_message(uid, "🌟 به ربات خوش اومدی! امیدوارم تجربه خوبی داشته باشی.", reply_markup=main_menu())
+# -----------------------------
+# هندل انتخاب پلن از منوی خرید
+# -----------------------------
+@bot.message_handler(func=lambda m: True)
+def on_fallback(m):
+    # این هندلر آخرین است و اگر قبلی‌ها return نکرده باشند می‌آید
+    pass
 
-print("🤖 Bot is running...")
-bot.infinity_polling()
+# -----------------------------
+# شروع اپ
+# -----------------------------
+if __name__ == "__main__":
+    set_webhook_once()
+    port = int(os.getenv("PORT", "8000"))
+    app.run(host="0.0.0.0", port=port)
