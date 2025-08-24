@@ -1,91 +1,91 @@
-import os
 import logging
 from fastapi import FastAPI, Request
-from telegram import (
-    Update,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardRemove
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
+    Application, CommandHandler, CallbackQueryHandler, ContextTypes
 )
 
-# ------------------ تنظیمات ------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN", "توکن_ربات_اینجا")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://live-avivah-bardiabsd-cd8d676a.koyeb.app/webhook")
-ADMIN_ID = 1743359080  # فقط برای تو
+# -------------------- تنظیمات --------------------
+TOKEN = "8339013760:AAEgr1PBFX59xc4cfTN2fWinWJHJUGWivdo"
+WEBHOOK_URL = "https://live-avivah-bardiabsd-cd8d676a.koyeb.app"  # دامنه اصلی سرور
+ADMIN_ID = 1743359080  # آیدی عددی ادمین
+
+# -------------------- راه‌اندازی --------------------
 logging.basicConfig(level=logging.INFO)
-# ---------------------------------------------
-
+telegram_app = Application.builder().token(TOKEN).build()
 app = FastAPI()
-telegram_app = Application.builder().token(BOT_TOKEN).build()
 
-# ------------------ هندلر استارت ------------------
+# -------------------- منو اصلی --------------------
+def main_menu(user_id: int):
+    buttons = [
+        [InlineKeyboardButton("🛒 خرید کانفیگ", callback_data="buy_config")],
+        [InlineKeyboardButton("🎫 تیکت‌های من", callback_data="my_tickets")],
+        [InlineKeyboardButton("👤 پروفایل من", callback_data="my_profile"),
+         InlineKeyboardButton("📞 ارتباط با پشتیبانی", callback_data="support")],
+    ]
+    if user_id == ADMIN_ID:
+        buttons.append([InlineKeyboardButton("⚙️ پنل ادمین", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(buttons)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    await update.message.reply_text("به ربات خوش اومدی 🚀", reply_markup=main_menu(user_id))
 
-    keyboard = [
-        [KeyboardButton("📦 خرید اکانت"), KeyboardButton("👤 پروفایل من")],
-        [KeyboardButton("📞 ارتباط با پشتیبانی"), KeyboardButton("📑 تیکت‌های من")],
-    ]
+# -------------------- هندلر دکمه‌ها --------------------
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-    # فقط ادمین ببیند
-    if user_id == ADMIN_ID:
-        keyboard.append([KeyboardButton("⚙️ پنل ادمین")])
+    if query.data == "buy_config":
+        plans = [
+            [InlineKeyboardButton("💳 پلن 1 ماهه - 100,000 تومان", callback_data="plan_1m")],
+            [InlineKeyboardButton("💳 پلن 3 ماهه - 250,000 تومان", callback_data="plan_3m")],
+            [InlineKeyboardButton("💳 پلن 6 ماهه - 450,000 تومان", callback_data="plan_6m")],
+            [InlineKeyboardButton("❌ انصراف", callback_data="cancel")]
+        ]
+        await query.edit_message_text(
+            "📦 لطفا یکی از پلن‌های زیر را انتخاب کنید:",
+            reply_markup=InlineKeyboardMarkup(plans)
+        )
 
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text(
-        "سلام ✌️ خوش اومدی به GoldenVPN 🚀\nاز منوی زیر انتخاب کن:",
-        reply_markup=reply_markup
-    )
+    elif query.data.startswith("plan_"):
+        await query.edit_message_text(
+            f"✅ شما {query.data.replace('plan_', '')} انتخاب کردید.\n"
+            "به زودی درگاه پرداخت اضافه میشه 🔑"
+        )
 
-# ------------------ هندلر خرید اکانت ------------------
-async def buy_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    plans = (
-        "🔥 پلن‌ها:\n\n"
-        "1️⃣ یک ماهه - 100,000 تومان\n"
-        "2️⃣ سه ماهه - 250,000 تومان\n"
-        "3️⃣ شش ماهه - 450,000 تومان\n"
-        "4️⃣ یک ساله - 800,000 تومان\n\n"
-        "لطفا یکی رو انتخاب کن یا روی «❌ انصراف» بزن."
-    )
+    elif query.data == "cancel":
+        await query.edit_message_text("❌ عملیات لغو شد.")
 
-    keyboard = [
-        [KeyboardButton("1️⃣ یک ماهه"), KeyboardButton("2️⃣ سه ماهه")],
-        [KeyboardButton("3️⃣ شش ماهه"), KeyboardButton("4️⃣ یک ساله")],
-        [KeyboardButton("❌ انصراف")]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text(plans, reply_markup=reply_markup)
+    elif query.data == "my_tickets":
+        await query.edit_message_text("🎫 لیست تیکت‌های شما (فعلا خالیه).")
 
-# ------------------ هندلر انصراف ------------------
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start(update, context)
+    elif query.data == "my_profile":
+        await query.edit_message_text("👤 اطلاعات پروفایل شما:\nنام: تست\nاشتراک: فعال")
 
-# ------------------ ثبت هندلرها ------------------
+    elif query.data == "support":
+        await query.edit_message_text("📞 برای ارتباط با پشتیبانی اینجا کلیک کنید:\n@YourSupportUser")
+
+    elif query.data == "admin_panel":
+        if query.from_user.id == ADMIN_ID:
+            await query.edit_message_text("⚙️ به پنل مدیریت خوش آمدید.")
+        else:
+            await query.edit_message_text("⛔️ شما دسترسی به پنل مدیریت ندارید.")
+
+# -------------------- ثبت هندلرها --------------------
 telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(MessageHandler(filters.Regex("^📦 خرید اکانت$"), buy_account))
-telegram_app.add_handler(MessageHandler(filters.Regex("^❌ انصراف$"), cancel))
+telegram_app.add_handler(CallbackQueryHandler(handle_buttons))
 
-# ------------------ FastAPI ------------------
+# -------------------- وبهوک --------------------
+@app.on_event("startup")
+async def on_startup():
+    webhook_url = f"{WEBHOOK_URL}/webhook"   # 📌 اصلاح اصلی
+    await telegram_app.bot.set_webhook(url=webhook_url)
+    logging.info(f"✅ Webhook set to: {webhook_url}")
+
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
     update = Update.de_json(data, telegram_app.bot)
     await telegram_app.process_update(update)
-    return {"ok": True}
-
-@app.on_event("startup")
-async def on_startup():
-    # وبهوک ست شه
-    await telegram_app.bot.set_webhook(url=WEBHOOK_URL)
-    logging.info(f"✅ Webhook set to: {WEBHOOK_URL}")
-
-@app.get("/")
-async def home():
-    return {"status": "ok", "message": "Bot is running 🚀"}
+    return {"status": "ok"}
