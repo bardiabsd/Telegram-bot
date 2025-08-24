@@ -23,6 +23,8 @@ try:
     async def webhook(request: Request):
         data = await request.json()
         update = Update.de_json(data, application.bot)
+        await application.initialize()
+await application.start()
         await application.process_update(update)
         return {"ok": True}
 except Exception:
