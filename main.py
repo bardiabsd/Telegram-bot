@@ -16,6 +16,15 @@ from pydantic import BaseModel
 # FastAPI fallback برای Koyeb/ASGI
 try:
     app = FastAPI()
+    from fastapi import Request
+    from telegram import Update
+
+    @app.post("/webhook")
+    async def webhook(request: Request):
+        data = await request.json()
+        update = Update.de_json(data, application.bot)
+        await application.process_update(update)
+        return {"ok": True}
 except Exception:
     app = None
 from sqlalchemy import (
