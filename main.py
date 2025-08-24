@@ -1,128 +1,223 @@
 import os
 import logging
-from fastapi import FastAPI, Request
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application
+from datetime import datetime
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+    InputFile
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 
-# 📌 گرفتن توکن و آیدی ادمین از Environment Variables
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))  # اینجا یه دیفالت گذاشتم که اگه ست نشده باشه ارور نده
+# ------------------ تنظیمات پایه ------------------
+TOKEN = os.getenv("BOT_TOKEN", "توکن_بات_اینجا")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))  # آیدی عددی ادمین
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://your-app-url.koyeb.app")
 
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # آدرس سرور (از Koyeb یا هرجایی که ست کردی)
+# ------------------ دیتابیس ساده ------------------
+users_wallet = {ADMIN_ID: 50000}  # موجودی تستی
+discount_codes = {"OFF30": 30}  # کد تخفیف تستی
+pending_receipts = {}  # ذخیره رسیدها
+plans = {
+    1: {"name": "پلن 1 ماهه", "price": 100000, "desc": "حجم نامحدود | سرعت بالا | 1 کاربر"},
+    2: {"name": "پلن 3 ماهه", "price": 250000, "desc": "حجم نامحدود | سرعت بالا | 1 کاربر"},
+    3: {"name": "پلن 6 ماهه", "price": 450000, "desc": "حجم نامحدود | سرعت بالا | 1 کاربر"},
+}
+config_repo = {
+    1: ["config_1_month_1", "config_1_month_2"],
+    2: ["config_3_month_1", "config_3_month_2"],
+    3: ["config_6_month_1"],
+}
 
-# 📌 لاگ‌گیری
+# ------------------ لاگ ------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 📌 ساخت اپلیکیشن تلگرام
-telegram_app = Application.builder().token(BOT_TOKEN).build()
-
-# 📌 ساخت اپلیکیشن FastAPI
-app = FastAPI()
-
-# =========================
-#   هندلرهای ربات
-# =========================
-async def start(update: Update, context):
+# ------------------ دستورات ------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-
-    # ساخت منوی اصلی
     keyboard = [
         [InlineKeyboardButton("🛒 خرید کانفیگ", callback_data="buy_config")],
-        [InlineKeyboardButton("👤 پروفایل من", callback_data="my_profile")],
-        [InlineKeyboardButton("🎟 تیکت‌های من", callback_data="my_tickets")],
-        [InlineKeyboardButton("☎️ ارتباط با پشتیبانی", callback_data="support")]
+        [InlineKeyboardButton("🎫 تیکت‌های من", callback_data="my_tickets")],
+        [InlineKeyboardButton("👤 پروفایل من", callback_data="profile")],
+        [InlineKeyboardButton("📞 ارتباط با پشتیبانی", callback_data="support")],
     ]
-
-    # اگه کاربر ادمین بود، دکمه پنل ادمین هم اضافه کن
     if user_id == ADMIN_ID:
         keyboard.append([InlineKeyboardButton("🛠 پنل ادمین", callback_data="admin_panel")])
 
-    await update.message.reply_text(
-        "به ربات GoldenVPN خوش آمدی 🌐",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text("به ربات خوش اومدی! 👋", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# 📌 خرید کانفیگ
-async def buy_config(update: Update, context):
+# ------------------ خرید کانفیگ ------------------
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user_id = query.from_user.id
+    data = query.data
 
-    keyboard = [
-        [InlineKeyboardButton("پلن 1️⃣ - ماهانه - 100,000 تومان", callback_data="plan_1")],
-        [InlineKeyboardButton("پلن 2️⃣ - سه ماهه - 250,000 تومان", callback_data="plan_2")],
-        [InlineKeyboardButton("پلن 3️⃣ - شش ماهه - 450,000 تومان", callback_data="plan_3")],
-        [InlineKeyboardButton("❌ انصراف", callback_data="cancel_buy")]
-    ]
+    # خرید کانفیگ
+    if data == "buy_config":
+        keyboard = [[InlineKeyboardButton(p["name"], callback_data=f"plan_{pid}")]
+                    for pid, p in plans.items()]
+        keyboard.append([InlineKeyboardButton("❌ انصراف", callback_data="cancel_buy")])
+        await query.edit_message_text("📋 لطفا یک پلن انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    await query.edit_message_text(
-        text="🛒 لطفا یکی از پلن‌های زیر را انتخاب کنید:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    elif data.startswith("plan_"):
+        plan_id = int(data.split("_")[1])
+        plan = plans[plan_id]
+        text = f"📦 {plan['name']}\n💰 قیمت: {plan['price']} تومان\nℹ️ توضیحات: {plan['desc']}"
+        keyboard = [
+            [InlineKeyboardButton("💳 کارت به کارت", callback_data=f"pay_card_{plan_id}")],
+            [InlineKeyboardButton("💰 کیف پول", callback_data=f"pay_wallet_{plan_id}")],
+            [InlineKeyboardButton("🏷 کد تخفیف", callback_data=f"discount_{plan_id}")],
+            [InlineKeyboardButton("❌ انصراف", callback_data="buy_config")],
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-# 📌 پروفایل کاربر
-async def my_profile(update: Update, context):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("👤 اطلاعات پروفایل شما (در آینده تکمیل می‌شود).")
+    elif data.startswith("pay_card_"):
+        plan_id = int(data.split("_")[2])
+        price = plans[plan_id]["price"]
+        pending_receipts[user_id] = {"plan_id": plan_id, "price": price, "method": "کارت به کارت"}
+        await query.edit_message_text(
+            f"💳 لطفا مبلغ {price} تومان رو به شماره کارت 1234-5678-9012-3456 واریز کنید.\n\n"
+            "بعد از پرداخت رسید رو (عکس یا متن) ارسال کنید."
+        )
 
-# 📌 تیکت‌های من
-async def my_tickets(update: Update, context):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("🎟 لیست تیکت‌های شما (در آینده نمایش داده می‌شود).")
+    elif data.startswith("pay_wallet_"):
+        plan_id = int(data.split("_")[2])
+        price = plans[plan_id]["price"]
+        balance = users_wallet.get(user_id, 0)
+        if balance >= price:
+            users_wallet[user_id] = balance - price
+            await send_config(user_id, plan_id, context)
+            await query.edit_message_text("✅ خرید با کیف پول موفق بود! 🎉")
+        else:
+            diff = price - balance
+            pending_receipts[user_id] = {"plan_id": plan_id, "price": diff, "method": "مابه تفاوت"}
+            await query.edit_message_text(
+                f"💸 موجودی کیف پولت کمه!\nباید {diff} تومان کارت به کارت کنی.\n"
+                "لطفا رسید پرداخت رو ارسال کن."
+            )
 
-# 📌 ارتباط با پشتیبانی
-async def support(update: Update, context):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("☎️ برای ارتباط با پشتیبانی پیام خود را ارسال کنید.")
+    elif data.startswith("discount_"):
+        plan_id = int(data.split("_")[1])
+        pending_receipts[user_id] = {"plan_id": plan_id, "method": "کد تخفیف"}
+        await query.edit_message_text("🏷 لطفا کد تخفیف رو ارسال کنید:")
 
-# 📌 پنل ادمین
-async def admin_panel(update: Update, context):
-    query = update.callback_query
-    if query.from_user.id != ADMIN_ID:
-        await query.answer("⛔️ شما دسترسی به پنل ادمین ندارید.", show_alert=True)
+    elif data == "cancel_buy":
+        await query.edit_message_text("❌ خرید لغو شد.")
+
+# ------------------ رسید ------------------
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in pending_receipts:
+        receipt = pending_receipts[user_id]
+        msg_type = "عکس" if update.message.photo else "متن"
+        content = update.message.caption if update.message.caption else update.message.text
+
+        text = (
+            f"📥 رسید جدید دریافت شد\n"
+            f"👤 یوزرنیم: @{update.effective_user.username}\n"
+            f"🆔 آیدی: {user_id}\n"
+            f"📦 پلن: {plans[receipt['plan_id']]['name']}\n"
+            f"💳 روش پرداخت: {receipt['method']}\n"
+            f"📝 نوع رسید: {msg_type}\n"
+            f"📅 تاریخ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        )
+
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ تایید", callback_data=f"approve_{user_id}"),
+                InlineKeyboardButton("❌ رد", callback_data=f"reject_{user_id}")
+            ]
+        ]
+
+        if update.message.photo:
+            file_id = update.message.photo[-1].file_id
+            await context.bot.send_photo(ADMIN_ID, file_id, caption=text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await context.bot.send_message(ADMIN_ID, text + f"\n📝 رسید: {content}", reply_markup=InlineKeyboardMarkup(keyboard))
+
+        await update.message.reply_text("✅ رسیدت برای ادمین ارسال شد، لطفا منتظر بررسی باش 🌹")
         return
+
+    # کد تخفیف
+    if user_id in pending_receipts and pending_receipts[user_id].get("method") == "کد تخفیف":
+        code = update.message.text.strip()
+        receipt = pending_receipts[user_id]
+        plan_id = receipt["plan_id"]
+        if code in discount_codes:
+            discount = discount_codes[code]
+            price = plans[plan_id]["price"]
+            new_price = price - (price * discount // 100)
+            pending_receipts[user_id] = {"plan_id": plan_id, "price": new_price, "method": "تخفیف"}
+            await update.message.reply_text(
+                f"✅ کد تخفیف اعمال شد!\n💰 مبلغ جدید: {new_price} تومان\n\n"
+                "حالا روش پرداخت رو انتخاب کن:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💳 کارت به کارت", callback_data=f"pay_card_{plan_id}")],
+                    [InlineKeyboardButton("💰 کیف پول", callback_data=f"pay_wallet_{plan_id}")],
+                    [InlineKeyboardButton("❌ انصراف", callback_data="buy_config")]
+                ])
+            )
+        else:
+            await update.message.reply_text("❌ کد تخفیف نامعتبره! لطفا دوباره تلاش کن.")
+
+# ------------------ تایید / رد رسید ------------------
+async def approve_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
     await query.answer()
-    await query.edit_message_text("🛠 خوش آمدید به پنل ادمین.")
+    data = query.data
+    admin_id = query.from_user.id
 
-# 📌 کال‌بک‌ها
-telegram_app.add_handler(
-    telegram.ext.CommandHandler("start", start)
-)
-telegram_app.add_handler(
-    telegram.ext.CallbackQueryHandler(buy_config, pattern="buy_config")
-)
-telegram_app.add_handler(
-    telegram.ext.CallbackQueryHandler(my_profile, pattern="my_profile")
-)
-telegram_app.add_handler(
-    telegram.ext.CallbackQueryHandler(my_tickets, pattern="my_tickets")
-)
-telegram_app.add_handler(
-    telegram.ext.CallbackQueryHandler(support, pattern="support")
-)
-telegram_app.add_handler(
-    telegram.ext.CallbackQueryHandler(admin_panel, pattern="admin_panel")
-)
+    if admin_id != ADMIN_ID:
+        return
 
-# =========================
-#   FastAPI Webhook
-# =========================
-@app.on_event("startup")
-async def on_startup():
-    await telegram_app.initialize()  # 🔥 مشکل اصلی این بود
-    await telegram_app.bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"✅ Webhook set to: {WEBHOOK_URL}")
+    action, user_id = data.split("_")
+    user_id = int(user_id)
+    receipt = pending_receipts.get(user_id)
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    await telegram_app.shutdown()
+    if not receipt:
+        await query.edit_message_caption("⛔ رسید پیدا نشد.")
+        return
 
-@app.post("/webhook")
-async def webhook(request: Request):
-    data = await request.json()
-    update = Update.de_json(data, telegram_app.bot)
-    await telegram_app.process_update(update)
-    return {"ok": True} 
+    if action == "approve":
+        await send_config(user_id, receipt["plan_id"], context)
+        await context.bot.send_message(user_id, "🎉 رسیدت تایید شد و کانفیگ برات ارسال شد! مبارکه 🚀")
+        await query.edit_message_caption("✅ رسید تایید شد و کانفیگ ارسال شد.")
+        del pending_receipts[user_id]
+
+    elif action == "reject":
+        await context.bot.send_message(user_id, "❌ رسیدت رد شد. اگه فکر میکنی اشتباه شده با پشتیبانی تماس بگیر 📞")
+        await query.edit_message_caption("❌ رسید رد شد.")
+
+# ------------------ ارسال کانفیگ ------------------
+async def send_config(user_id, plan_id, context):
+    if config_repo.get(plan_id):
+        config = config_repo[plan_id].pop(0)
+        await context.bot.send_message(user_id, f"📡 کانفیگ شما:\n\n<code>{config}</code>", parse_mode="HTML")
+    else:
+        await context.bot.send_message(user_id, "⛔ کانفیگ موجود نیست! لطفا با ادمین تماس بگیر.")
+
+# ------------------ ران ------------------
+def main():
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(handle_buttons))
+    app.add_handler(CallbackQueryHandler(approve_reject, pattern="^(approve|reject)_"))
+    app.add_handler(MessageHandler(filters.ALL, handle_message))
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.getenv("PORT", 8000)),
+        url_path=TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
+    )
+
+if __name__ == "__main__":
+    main()
