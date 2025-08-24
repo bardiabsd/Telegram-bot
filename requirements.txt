@@ -5,3 +5,4 @@ SQLAlchemy==2.0.31
 alembic==1.13.2
 pydantic==2.8.2
 python-dotenv==1.0.1
+httpx==0.24.2
