@@ -1,1 +1,24 @@
-
+--- a/main.py
++++ b/main.py
+@@ -1,6 +1,13 @@
+ import os
+ import logging
+ from sqlalchemy import create_engine
++from sqlalchemy.exc import OperationalError
++
++# ASGI needs an app object
++try:
++    from fastapi import FastAPI
++    app = FastAPI()
++except ImportError:
++    app = None
+ 
+ # Database setup
+-engine = create_engine("sqlite:///database.db")
+-Base.metadata.create_all(engine)
++engine = create_engine("sqlite:///database.db")
++try:
++    Base.metadata.create_all(engine)
++except OperationalError:
++    # Table already exists, ignore error
++    pass
