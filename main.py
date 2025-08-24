@@ -11,7 +11,13 @@ from typing import Optional, List, Dict, Tuple
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
+from pydantic import BaseModel
 
+# FastAPI fallback برای Koyeb/ASGI
+try:
+    app = FastAPI()
+except Exception:
+    app = None
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, UniqueConstraint, func
 )
@@ -29,7 +35,7 @@ from telegram.ext import (
 # ==============================
 # ENV & Globals
 # ==============================
-BOT_TOKEN  = os.getenv("BOT_TOKEN", "").strip()
+BOT_TOKEN  = os.getenv("BOT_TOKEN","https://live-avivah-bardiabsd-cd8d676a.koyeb.app").strip()
 BASE_URL   = os.getenv("BASE_URL", "").strip().rstrip("/")
 ADMIN_IDS  = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()]
 CARD_NUMBER = os.getenv("CARD_NUMBER", "6037-********-****-****")
@@ -46,7 +52,7 @@ WEBHOOK_URL  = f"{BASE_URL}{WEBHOOK_PATH}"
 Base = declarative_base()
 engine = create_engine("sqlite:///bot.db", connect_args={"check_same_thread": False})
 SessionLocal = scoped_session(sessionmaker(bind=engine, autocommit=False, autoflush=False))
-
+Base.metadata.create_all(engine, checkfirst=True)
 def now():
     return dt.datetime.utcnow()
 
